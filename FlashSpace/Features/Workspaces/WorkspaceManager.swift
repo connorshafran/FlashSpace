@@ -528,22 +528,13 @@ extension WorkspaceManager {
 
     /// Moves an app to a target workspace at runtime via hotkey or CLI.
     /// Creates a temporary assignment (suppresses any default assignment).
-    /// Optionally switches to the target workspace based on user settings.
-    func moveAppToWorkspace(_ app: MacApp, to workspace: Workspace) {
+    /// Always switches to the target workspace so the app stays visible.
+    func moveAppToWorkspace(_ app: MacApp, to workspace: Workspace, switchToWorkspace: Bool = true) {
         removeBorrowedApp(app)
         temporarilyAssignApp(app, to: workspace)
 
-        if workspaceSettings.changeWorkspaceOnAppAssign {
+        if switchToWorkspace {
             activateWorkspace(workspace, setFocus: true)
-        } else {
-            let isTargetWorkspaceActive = activeWorkspace.values
-                .contains(where: { $0.id == workspace.id })
-            if !isTargetWorkspaceActive {
-                NSWorkspace.shared.runningApplications
-                    .find(app)?
-                    .hide()
-                AppDependencies.shared.focusManager.nextWorkspaceApp()
-            }
         }
     }
 

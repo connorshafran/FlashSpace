@@ -145,14 +145,7 @@ final class AppCommands: CommandExecutor {
             )
         }
 
-        let previousSetting = settings.changeWorkspaceOnAppAssign
-        if let activate {
-            settings.changeWorkspaceOnAppAssign = activate
-        }
-        workspaceManager.moveAppToWorkspace(app, to: workspace)
-        if activate != nil {
-            settings.changeWorkspaceOnAppAssign = previousSetting
-        }
+        workspaceManager.moveAppToWorkspace(app, to: workspace, switchToWorkspace: activate ?? true)
 
         if showNotification {
             Toast.showWith(

@@ -271,9 +271,13 @@ extension WorkspaceHotKeys {
             let finderWindowManager = AppDependencies.shared.finderWindowManager
             finderWindowManager.assignFocusedFinderWindow(to: workspace.id)
 
+            if let updatedWorkspace = workspaceRepository.findWorkspace(with: workspace.id) {
+                workspaceManager.activateWorkspace(updatedWorkspace, setFocus: true)
+            }
+
             Toast.showWith(
                 icon: "square.stack.3d.up",
-                message: "Finder Window - Assigned To \(workspace.name)",
+                message: "Finder Window - Moved To \(workspace.name)",
                 textColor: .positive
             )
             return
