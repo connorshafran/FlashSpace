@@ -28,13 +28,31 @@ final class WorkspaceManager: ObservableObject {
     private(set) var mostRecentWorkspace: [DisplayName: Workspace] = [:]
     private(set) var lastWorkspaceActivation = Date.distantPast
     private(set) var workspaceActivationTimes: [WorkspaceID: Date] = [:]
+    private(set) var temporaryApps: [WorkspaceID: [MacApp]] = [:]
+
+    /// Apps "borrowed" from their assigned workspace to be visible on another.
+    /// Unlike temp assignments, borrows are automatically cleaned up when the
+    /// user returns to the app's assigned workspace (permanent or temporary).
+    private(set) var borrowedApps: [WorkspaceID: [MacApp]] = [:]
+
+    /// Bundle IDs of apps that FlashSpace hid during the last workspace switch.
+    /// Apps NOT in this set were visible elsewhere (e.g. on a secondary display)
+    /// and are candidates for the drag-back workflow in isolation mode.
+    private(set) var appsHiddenByFlashSpace: Set<String> = []
+
+    /// Bundle IDs of all running apps at the time of the last workspace switch.
+    /// Used to distinguish "app was on secondary display during switch" from
+    /// "app was launched after switch".
+    private(set) var appsRunningAtLastSwitch: Set<String> = []
 
     private var cancellables = Set<AnyCancellable>()
     private var observeFocusCancellable: AnyCancellable?
     private var appsHiddenManually: [WorkspaceID: [MacApp]] = [:]
-    private let hideAgainSubject = PassthroughSubject<Workspace, Never>()
+    private let hideAgainSubject = PassthroughSubject<(Workspace, Set<DisplayName>), Never>()
 
     private lazy var focusedWindowTracker = AppDependencies.shared.focusedWindowTracker
+    private lazy var finderWindowManager = AppDependencies.shared.finderWindowManager
+    private lazy var workspaceScreenshotManager = AppDependencies.shared.workspaceScreenshotManager
 
     private let workspaceRepository: WorkspaceRepository
     private let workspaceSettings: WorkspaceSettings
@@ -67,7 +85,7 @@ final class WorkspaceManager: ObservableObject {
     private func observe() {
         hideAgainSubject
             .debounce(for: 0.2, scheduler: RunLoop.main)
-            .sink { [weak self] in self?.hideApps(in: $0) }
+            .sink { [weak self] workspace, displays in self?.hideApps(in: workspace, on: displays) }
             .store(in: &cancellables)
 
         NotificationCenter.default
@@ -76,6 +94,19 @@ final class WorkspaceManager: ObservableObject {
                 self?.activeWorkspace = [:]
                 self?.mostRecentWorkspace = [:]
                 self?.activeWorkspaceDetails = nil
+                self?.temporaryApps = [:]
+                self?.borrowedApps = [:]
+                self?.appsHiddenByFlashSpace = []
+                self?.appsRunningAtLastSwitch = []
+                self?.finderWindowManager.reset()
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didTerminateApplicationNotification)
+            .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
+            .sink { [weak self] app in
+                self?.removeTerminatedTemporaryApp(app)
             }
             .store(in: &cancellables)
 
@@ -94,6 +125,16 @@ final class WorkspaceManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        workspaceSettings.$enableTemporaryAppAssignment
+            .dropFirst()
+            .filter { !$0 }
+            .sink { [weak self] _ in
+                self?.temporaryApps = [:]
+                self?.borrowedApps = [:]
+                NotificationCenter.default.post(name: .temporaryAppsChanged, object: nil)
+            }
+            .store(in: &cancellables)
+
         observeFocus()
     }
 
@@ -102,6 +143,7 @@ final class WorkspaceManager: ObservableObject {
             .publisher(for: NSWorkspace.didActivateApplicationNotification)
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .filter { $0.activationPolicy == .regular }
+            .filter { !$0.isFinderDesktopInteraction }
             .sink { [weak self] application in
                 self?.invalidateInactiveWorkspaces()
                 self?.rememberLastFocusedApp(application, retry: true)
@@ -124,7 +166,10 @@ final class WorkspaceManager: ObservableObject {
 
         let focusedDisplay = DisplayName.current
 
-        if let activeWorkspace = activeWorkspace[focusedDisplay], activeWorkspace.apps.containsApp(application) {
+        if let activeWorkspace = activeWorkspace[focusedDisplay],
+           activeWorkspace.apps.containsApp(application) ||
+           (temporaryApps[activeWorkspace.id] ?? []).containsApp(application) ||
+           (borrowedApps[activeWorkspace.id] ?? []).containsApp(application) {
             updateLastFocusedApp(application.toMacApp, in: activeWorkspace)
             updateActiveWorkspace(activeWorkspace, on: [focusedDisplay])
         }
@@ -134,6 +179,9 @@ final class WorkspaceManager: ObservableObject {
 
     private func updateWorkspaces(_ workspaces: [Workspace]) {
         let updatedWorkspaces = workspaces.reduce(into: [WorkspaceID: Workspace]()) { $0[$1.id] = $1 }
+
+        // Restore any Finder windows belonging to deleted workspaces
+        finderWindowManager.restoreWindowsNotIn(validWorkspaces: Set(updatedWorkspaces.keys))
 
         for (display, workspace) in activeWorkspace {
             activeWorkspace[display] = updatedWorkspaces[workspace.id]
@@ -148,10 +196,25 @@ final class WorkspaceManager: ObservableObject {
         let regularApps = NSWorkspace.shared.runningRegularApps
         let floatingApps = floatingAppsSettings.floatingApps
         let hiddenApps = appsHiddenManually[workspace.id] ?? []
+        let tempApps = temporaryApps[workspace.id] ?? []
+        let borrowed = borrowedApps[workspace.id] ?? []
+
+        // Apps that have been moved (temp assignment) or borrowed to another
+        // workspace should be suppressed on their original workspace.
+        let movedAway = temporaryApps.filter { $0.key != workspace.id }
+            .values.flatMap { $0 }.map(\.bundleIdentifier)
+        let borrowedAway = borrowedApps.filter { $0.key != workspace.id }
+            .values.flatMap { $0 }.map(\.bundleIdentifier)
+        let suppressedBundleIds = Set(movedAway + borrowedAway)
+
         var appsToShow = regularApps
+            .filter { !$0.isFinder } // Finder windows managed individually by FinderWindowManager
             .filter { !hiddenApps.containsApp($0) }
+            .filter { !suppressedBundleIds.contains($0.bundleIdentifier ?? "") }
             .filter {
                 workspace.apps.containsApp($0) ||
+                    tempApps.containsApp($0) ||
+                    borrowed.containsApp($0) ||
                     floatingApps.containsApp($0) && $0.isOnAnyDisplay(displays)
             }
 
@@ -190,18 +253,22 @@ final class WorkspaceManager: ObservableObject {
         }
     }
 
-    private func hideApps(in workspace: Workspace) {
+    private func hideApps(in workspace: Workspace, on displays: Set<DisplayName>) {
         let regularApps = NSWorkspace.shared.runningRegularApps
-        let workspaceApps = workspace.apps + floatingAppsSettings.floatingApps
+        let tempApps = temporaryApps[workspace.id] ?? []
+        let borrowed = borrowedApps[workspace.id] ?? []
+        let workspaceApps = workspace.apps + tempApps + borrowed + floatingAppsSettings.floatingApps
         let isAnyWorkspaceAppRunning = regularApps
             .contains { workspaceApps.containsApp($0) }
-        let allAssignedApps = workspaceRepository.workspaces
+        let allTempApps = temporaryApps.values.flatMap { $0 }.map(\.bundleIdentifier)
+        let allBorrowedApps = borrowedApps.values.flatMap { $0 }.map(\.bundleIdentifier)
+        let allAssignedApps = (workspaceRepository.workspaces
             .flatMap(\.apps)
-            .map(\.bundleIdentifier)
+            .map(\.bundleIdentifier) + allTempApps + allBorrowedApps)
             .asSet
-        let displays = workspace.displays
 
         let appsToHide = regularApps
+            .filter { !$0.isFinder } // Finder windows managed individually by FinderWindowManager
             .filter {
                 !$0.isHidden && !workspaceApps.containsApp($0) &&
                     (!workspaceSettings.keepUnassignedAppsOnSwitch || allAssignedApps.contains($0.bundleIdentifier ?? ""))
@@ -209,12 +276,16 @@ final class WorkspaceManager: ObservableObject {
             .filter { isAnyWorkspaceAppRunning || $0.bundleURL?.fileName != "Finder" }
             .filter { $0.isOnAnyDisplay(displays) }
 
+        appsHiddenByFlashSpace = []
         for app in appsToHide {
             Logger.log("HIDE: \(app.localizedName ?? "")")
 
             if !pictureInPictureManager.hideCornerHiddenAppIfNeeded(app: app),
                !pictureInPictureManager.hidePipAppIfNeeded(app: app) {
                 app.hide()
+                if let bundleId = app.bundleIdentifier {
+                    appsHiddenByFlashSpace.insert(bundleId)
+                }
             }
         }
     }
@@ -244,7 +315,10 @@ final class WorkspaceManager: ObservableObject {
             appToFocus = apps.find(workspace.appToFocus)
         }
 
-        let fallbackToLastApp = apps.findFirstMatch(with: workspace.apps.reversed())
+        let tempApps = temporaryApps[workspace.id] ?? []
+        let borrowed = borrowedApps[workspace.id] ?? []
+        let allWorkspaceApps = workspace.apps + tempApps + borrowed
+        let fallbackToLastApp = apps.findFirstMatch(with: allWorkspaceApps.reversed())
         let fallbackToFinder = NSWorkspace.shared.runningApplications.first(where: \.isFinder)
 
         return appToFocus ?? fallbackToLastApp ?? fallbackToFinder
@@ -359,13 +433,22 @@ extension WorkspaceManager {
             return
         }
 
-        let displays = workspace.displays
+        var displays = workspace.displays
+        let isolating = workspaceSettings.isolateSecondaryDisplays && NSScreen.screens.count > 1
+
+        // When isolating secondary displays, restrict operations to the workspace's
+        // assigned display only. Apps on other displays remain untouched.
+        if isolating {
+            displays = [displayManager.resolveDisplay(workspace.display)]
+        }
 
         Logger.log("")
         Logger.log("")
         Logger.log("WORKSPACE: \(workspace.name)")
         Logger.log("DISPLAYS: \(displays.joined(separator: ", "))")
+        if isolating { Logger.log("ISOLATING: secondary displays excluded") }
         Logger.log("----")
+        let wasSpaceControlVisible = SpaceControl.isVisible
         SpaceControl.hide()
 
         if workspace.isDynamic, workspace.displays.isEmpty,
@@ -389,19 +472,44 @@ extension WorkspaceManager {
         focusedWindowTracker.stopTracking()
         defer { focusedWindowTracker.startTracking() }
 
+        // Capture the workspace being LEFT before the screen changes.
+        // The CGImage is grabbed synchronously (~5ms), JPEG encoding happens in the background.
+        let onDisplays: Set<DisplayName>? = isolating ? displays : nil
+        if let currentDisplay = displays.first,
+           let currentWorkspace = activeWorkspace[currentDisplay] {
+            // Track all visible Finder windows to the workspace being LEFT.
+            finderWindowManager.trackAllVisibleFinderWindows(in: currentWorkspace.id, onDisplays: onDisplays)
+
+            // Snapshot the departing workspace for Space Control / Workspace Switcher.
+            // Skip if Space Control was just showing — the overlay may still be compositing,
+            // and the workspace was already captured when Space Control opened.
+            if !wasSpaceControlVisible {
+                workspaceScreenshotManager.captureDisplay(currentDisplay, forWorkspace: currentWorkspace.id)
+            }
+        }
+
         workspaceTransitionManager.showTransitionIfNeeded(for: workspace, on: displays)
+
+        // Snapshot running app IDs for isolation-mode drag detection.
+        appsRunningAtLastSwitch = Set(
+            NSWorkspace.shared.runningRegularApps.compactMap(\.bundleIdentifier)
+        )
+
+        // Pull back borrowed apps that belong to this workspace's assignments.
+        cleanUpBorrowsOnReturn(to: workspace)
 
         rememberHiddenApps(workspaceToActivate: workspace.id)
         updateLastActivationTime(for: workspace)
         updateActiveWorkspace(workspace, on: displays)
         openAppsIfNeeded(in: workspace)
         showApps(in: workspace, setFocus: setFocus, on: displays)
-        hideApps(in: workspace)
+        hideApps(in: workspace, on: displays)
+        finderWindowManager.activateWorkspace(workspace.id, onDisplays: onDisplays)
         runIntegrationAfterActivation(for: workspace)
 
         // Some apps may not hide properly,
         // so we hide apps in the workspace after a short delay
-        hideAgainSubject.send(workspace)
+        hideAgainSubject.send((workspace, displays))
     }
 
     private func runIntegrationAfterActivation(for workspace: Workspace) {
@@ -418,36 +526,25 @@ extension WorkspaceManager {
         Integrations.runAfterActivationIfNeeded(workspace: newWorkspace)
     }
 
-    func assignApps(_ apps: [MacApp], to workspace: Workspace) {
-        for app in apps {
-            workspaceRepository.deleteAppFromAllWorkspaces(app: app)
-            workspaceRepository.addApp(to: workspace.id, app: app)
-        }
-
-        NotificationCenter.default.post(name: .appsListChanged, object: nil)
-    }
-
-    func assignApp(_ app: MacApp, to workspace: Workspace) {
-        workspaceRepository.deleteAppFromAllWorkspaces(app: app)
-        workspaceRepository.addApp(to: workspace.id, app: app)
-
-        guard let targetWorkspace = workspaceRepository.findWorkspace(with: workspace.id) else { return }
-
-        let isTargetWorkspaceActive = activeWorkspace.values
-            .contains(where: { $0.id == workspace.id })
-
-        updateLastFocusedApp(app, in: targetWorkspace)
+    /// Moves an app to a target workspace at runtime via hotkey or CLI.
+    /// Creates a temporary assignment (suppresses any default assignment).
+    /// Optionally switches to the target workspace based on user settings.
+    func moveAppToWorkspace(_ app: MacApp, to workspace: Workspace) {
+        removeBorrowedApp(app)
+        temporarilyAssignApp(app, to: workspace)
 
         if workspaceSettings.changeWorkspaceOnAppAssign {
-            activateWorkspace(targetWorkspace, setFocus: true)
-        } else if !isTargetWorkspaceActive {
-            NSWorkspace.shared.runningApplications
-                .find(app)?
-                .hide()
-            AppDependencies.shared.focusManager.nextWorkspaceApp()
+            activateWorkspace(workspace, setFocus: true)
+        } else {
+            let isTargetWorkspaceActive = activeWorkspace.values
+                .contains(where: { $0.id == workspace.id })
+            if !isTargetWorkspaceActive {
+                NSWorkspace.shared.runningApplications
+                    .find(app)?
+                    .hide()
+                AppDependencies.shared.focusManager.nextWorkspaceApp()
+            }
         }
-
-        NotificationCenter.default.post(name: .appsListChanged, object: nil)
     }
 
     func hideAll() {
@@ -467,6 +564,9 @@ extension WorkspaceManager {
             app.hide()
         }
 
+        // Restore all Finder windows since no workspace is active
+        finderWindowManager.restoreAllWindows()
+
         if let finder = NSWorkspace.shared.runningApplications.first(where: \.isFinder) {
             finder.activate()
         }
@@ -478,6 +578,7 @@ extension WorkspaceManager {
 
         let appsToHide = NSWorkspace.shared.runningApplications
             .regularVisibleApps(onDisplays: activeWorkspace.displays, excluding: activeWorkspace.apps)
+            .filter { !$0.isFinder }
 
         for app in appsToHide {
             Logger.log("CLEAN UP: \(app.localizedName ?? "")")
@@ -618,6 +719,146 @@ extension WorkspaceManager {
             resumeWorkspaceManagement()
         } else {
             pauseWorkspaceManagement()
+        }
+    }
+
+    // MARK: - Temporary App Assignment
+
+    func temporarilyAssignApp(_ app: MacApp, to workspace: Workspace) {
+        // Remove from any other workspace's temporary list
+        for (wsId, apps) in temporaryApps where wsId != workspace.id {
+            if apps.contains(app) {
+                temporaryApps[wsId] = apps.filter { $0 != app }
+                if temporaryApps[wsId]?.isEmpty == true {
+                    temporaryApps.removeValue(forKey: wsId)
+                }
+            }
+        }
+
+        // Add to the target workspace if not already there
+        if !(temporaryApps[workspace.id] ?? []).contains(app) {
+            temporaryApps[workspace.id, default: []].append(app)
+            Logger.log("Temporarily assigned \(app.name) to workspace: \(workspace.name)")
+        }
+
+        // Record as last focused app so it gets focus when switching back to this workspace.
+        // This must happen here because the observeFocus subscription may fire before the
+        // temp assignment, causing rememberLastFocusedApp to miss the app.
+        updateLastFocusedApp(app, in: workspace)
+
+        NotificationCenter.default.post(name: .temporaryAppsChanged, object: nil)
+    }
+
+    func temporaryApps(for workspaceId: WorkspaceID) -> [MacApp] {
+        temporaryApps[workspaceId] ?? []
+    }
+
+    func isTemporaryApp(_ app: MacApp, in workspaceId: WorkspaceID) -> Bool {
+        temporaryApps[workspaceId]?.contains(app) ?? false
+    }
+
+    func removeTemporaryApp(_ app: MacApp, from workspaceId: WorkspaceID? = nil) {
+        var changed = false
+        let idsToCheck = workspaceId.map { [$0] } ?? Array(temporaryApps.keys)
+        for wsId in idsToCheck {
+            if let apps = temporaryApps[wsId], apps.contains(app) {
+                temporaryApps[wsId] = apps.filter { $0 != app }
+                if temporaryApps[wsId]?.isEmpty == true {
+                    temporaryApps.removeValue(forKey: wsId)
+                }
+                changed = true
+            }
+        }
+        if changed {
+            NotificationCenter.default.post(name: .temporaryAppsChanged, object: nil)
+        }
+    }
+
+    private func removeTerminatedTemporaryApp(_ app: NSRunningApplication) {
+        let macApp = app.toMacApp
+        var changed = false
+
+        for (wsId, apps) in temporaryApps {
+            if apps.contains(macApp) {
+                temporaryApps[wsId] = apps.filter { $0 != macApp }
+                if temporaryApps[wsId]?.isEmpty == true {
+                    temporaryApps.removeValue(forKey: wsId)
+                }
+                changed = true
+                Logger.log("Removed terminated temporary app: \(macApp.name)")
+            }
+        }
+
+        // Also clean up borrowed state
+        removeBorrowedApp(macApp)
+
+        if changed {
+            NotificationCenter.default.post(name: .temporaryAppsChanged, object: nil)
+        }
+    }
+
+    // MARK: - Borrowed Apps
+
+    /// Borrows a permanently-assigned app to a workspace, making it visible there
+    /// without creating a temporary assignment.  The borrow is automatically
+    /// cleaned up when the user returns to the app's permanent workspace.
+    func borrowApp(_ app: MacApp, to workspace: Workspace) {
+        // Remove from any other workspace's borrowed list
+        for (wsId, apps) in borrowedApps where wsId != workspace.id {
+            if apps.contains(app) {
+                borrowedApps[wsId] = apps.filter { $0 != app }
+                if borrowedApps[wsId]?.isEmpty == true {
+                    borrowedApps.removeValue(forKey: wsId)
+                }
+            }
+        }
+
+        // Add to the target workspace if not already there
+        if !(borrowedApps[workspace.id] ?? []).contains(app) {
+            borrowedApps[workspace.id, default: []].append(app)
+            Logger.log("Borrowed \(app.name) to workspace: \(workspace.name)")
+        }
+
+        updateLastFocusedApp(app, in: workspace)
+    }
+
+    func removeBorrowedApp(_ app: MacApp) {
+        for (wsId, apps) in borrowedApps where apps.contains(app) {
+            borrowedApps[wsId] = apps.filter { $0 != app }
+            if borrowedApps[wsId]?.isEmpty == true {
+                borrowedApps.removeValue(forKey: wsId)
+            }
+        }
+    }
+
+    func isBorrowedApp(_ app: MacApp, in workspaceId: WorkspaceID) -> Bool {
+        borrowedApps[workspaceId]?.contains(app) ?? false
+    }
+
+    /// Returns true if the given app has a temporary assignment in any workspace.
+    func hasTemporaryAssignment(for app: MacApp) -> Bool {
+        temporaryApps.values.contains { $0.contains(app) }
+    }
+
+    /// Removes all borrows of apps that belong to the given workspace
+    /// (both permanent and temporary assignments).
+    /// Called when activating a workspace to "pull back" its apps.
+    private func cleanUpBorrowsOnReturn(to workspace: Workspace) {
+        let homeApps = workspace.apps + (temporaryApps[workspace.id] ?? [])
+        for app in homeApps {
+            var removed = false
+            for (wsId, apps) in borrowedApps where wsId != workspace.id {
+                if apps.contains(app) {
+                    borrowedApps[wsId] = apps.filter { $0 != app }
+                    if borrowedApps[wsId]?.isEmpty == true {
+                        borrowedApps.removeValue(forKey: wsId)
+                    }
+                    removed = true
+                }
+            }
+            if removed {
+                Logger.log("Pulled back borrowed app \(app.name) to workspace: \(workspace.name)")
+            }
         }
     }
 }

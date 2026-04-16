@@ -75,14 +75,14 @@ final class AppCommands: CommandExecutor {
             )
         }
 
-        workspaceRepository.deleteAppFromAllWorkspaces(app: app)
+        workspaceManager.removeTemporaryApp(app)
+        workspaceManager.removeBorrowedApp(app)
         NSWorkspace.shared.runningApplications.find(app)?.hide()
-        NotificationCenter.default.post(name: .appsListChanged, object: nil)
 
         if showNotification {
             Toast.showWith(
                 icon: "square.stack.3d.up.slash",
-                message: "\(app.name) - Removed From Workspaces",
+                message: "\(app.name) - Removed From Workspace",
                 textColor: .negative
             )
         }
@@ -109,7 +109,9 @@ final class AppCommands: CommandExecutor {
             )
         }
 
-        workspaceManager.assignApps(visibleApps.map(\.toMacApp), to: workspace)
+        for app in visibleApps {
+            workspaceManager.temporarilyAssignApp(app.toMacApp, to: workspace)
+        }
 
         if showNotification {
             Toast.showWith(
@@ -147,7 +149,7 @@ final class AppCommands: CommandExecutor {
         if let activate {
             settings.changeWorkspaceOnAppAssign = activate
         }
-        workspaceManager.assignApp(app, to: workspace)
+        workspaceManager.moveAppToWorkspace(app, to: workspace)
         if activate != nil {
             settings.changeWorkspaceOnAppAssign = previousSetting
         }

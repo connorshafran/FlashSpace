@@ -64,7 +64,6 @@ struct SpaceControlSettingsView: View {
                         "Update Screenshots On Open (slower)",
                         isOn: $settings.spaceControlUpdateScreenshotsOnOpen
                     )
-
                     VStack(alignment: .leading) {
                         HStack {
                             Text("Number Of Columns")

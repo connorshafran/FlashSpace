@@ -15,5 +15,6 @@ extension Notification.Name {
     static let spaceControlArrowDown = Notification.Name("spaceControlArrowDown")
     static let workspaceSwitcherNavigate = Notification.Name("workspaceSwitcherNavigate")
     static let pipFocusChanged = Notification.Name("pipFocusChanged")
+    static let temporaryAppsChanged = Notification.Name("temporaryAppsChanged")
     static let shortcutByNameDidChange = Notification.Name("KeyboardShortcuts_shortcutByNameDidChange")
 }

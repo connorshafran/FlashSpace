@@ -169,7 +169,7 @@ final class MainViewModel: ObservableObject {
 
     private func updateApps() {
         if let selectedWorkspaceId {
-            workspaceApps = workspaceRepository.findWorkspace(with: selectedWorkspaceId)?.apps
+            workspaceApps = workspaceRepository.findWorkspace(with: selectedWorkspaceId)?.apps ?? []
         } else {
             workspaceApps = nil
         }
@@ -280,13 +280,12 @@ extension MainViewModel {
     func deleteSelectedApps() {
         guard let selectedWorkspaceId, !selectedApps.isEmpty else { return }
 
-        let selectedApps = Array(selectedApps)
-
-        for app in selectedApps {
+        let appsToDelete = Array(selectedApps)
+        for app in appsToDelete {
             workspaceRepository.deleteApp(
                 from: selectedWorkspaceId,
                 app: app,
-                notify: app == selectedApps.last
+                notify: app == appsToDelete.last
             )
         }
 

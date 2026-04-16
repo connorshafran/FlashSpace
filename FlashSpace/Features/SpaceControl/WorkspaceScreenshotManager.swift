@@ -36,14 +36,71 @@ final class WorkspaceScreenshotManager {
         observe()
     }
 
-    @MainActor
-    func updateScreenshots() async {
-        let activeWorkspaces = workspaceManager.activeWorkspace
-            .filter { !spaceControlSettings.spaceControlCurrentDisplayWorkspaces || $0.value.isOnTheCurrentScreen }
+    /// Fast capture of the current workspace for Space Control "Update on Open".
+    /// Must be called from the main thread.
+    func captureCurrentWorkspace() {
+        guard PermissionsManager.shared.checkForScreenRecordingPermissions() else { return }
 
-        for (display, workspace) in activeWorkspaces {
-            await captureWorkspace(workspace, displayName: display)
+        let display = DisplayName.current
+        guard let workspace = workspaceManager.activeWorkspace[display] else { return }
+
+        captureDisplay(display, forWorkspace: workspace.id, inBackground: false)
+    }
+
+    /// Fast capture of a display using CGWindowListCreateImage.
+    /// The CGImage is captured synchronously (must happen before the screen changes),
+    /// then JPEG encoding + storage happens in the background if `inBackground` is true.
+    /// Must be called from the main thread.
+    func captureDisplay(_ displayName: DisplayName, forWorkspace workspaceId: WorkspaceID, inBackground: Bool = true) {
+        guard !SpaceControl.isVisible,
+              SpaceControl.isEnabled || WorkspaceSwitcher.isEnabled,
+              PermissionsManager.shared.checkForScreenRecordingPermissions() else { return }
+
+        guard let screen = NSScreen.screens.first(where: { $0.localizedName == displayName }) else { return }
+
+        // Capture at 1x resolution (not retina 2x) -- plenty for thumbnails.
+        // CGWindowListCreateImage is synchronous and fast (~5ms).
+        guard let cgImage = CGWindowListCreateImage(
+            screen.frame,
+            .optionOnScreenOnly,
+            kCGNullWindowID,
+            .nominalResolution
+        ) else { return }
+
+        let key = ScreenshotKey(displayName: displayName, workspaceID: workspaceId)
+
+        if inBackground {
+            // JPEG encode on a background queue -- doesn't block the workspace switch
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let jpegData = Self.encodeJPEG(cgImage) else { return }
+                self?.lock.lock()
+                self?.screenshots[key] = jpegData
+                self?.lock.unlock()
+            }
+        } else {
+            // Encode synchronously -- used when Space Control needs the image immediately
+            guard let jpegData = Self.encodeJPEG(cgImage) else { return }
+            lock.lock()
+            screenshots[key] = jpegData
+            lock.unlock()
         }
+    }
+
+    private static func encodeJPEG(_ cgImage: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data as CFMutableData,
+            "public.jpeg" as CFString,
+            1,
+            nil
+        ) else { return nil }
+
+        CGImageDestinationAddImage(destination, cgImage, [
+            kCGImageDestinationLossyCompressionQuality: 0.7
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+
+        return data as Data
     }
 
     func captureWorkspace(_ workspace: Workspace, displayName: DisplayName) async {
@@ -134,18 +191,6 @@ final class WorkspaceScreenshotManager {
     }
 
     private func observe() {
-        NotificationCenter.default
-            .publisher(for: .workspaceTransitionFinished)
-            .compactMap { $0.object as? Workspace }
-            .sink { [weak self] workspace in
-                for display in workspace.displays {
-                    Task.detached { [weak self] in
-                        await self?.captureWorkspace(workspace, displayName: display)
-                    }
-                }
-            }
-            .store(in: &cancellables)
-
         NotificationCenter.default
             .publisher(for: .profileChanged)
             .sink { [weak self] _ in

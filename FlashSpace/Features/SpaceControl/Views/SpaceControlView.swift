@@ -15,45 +15,13 @@ struct SpaceControlView: View {
     var body: some View {
         let columns = Array(repeating: GridItem(.flexible()), count: viewModel.numberOfColumns)
 
-        ZStack {
-            LazyVGrid(columns: columns, spacing: viewModel.numberOfRows == 2 ? 90.0 : 60.0) {
-                ForEach(viewModel.workspaces, id: \.index) { workspace in
-                    VStack(alignment: .leading, spacing: 16.0) {
-                        workspaceName(workspace)
-
-                        Group {
-                            if let image = workspace.screenshotData.flatMap(NSImage.init(data:)) {
-                                workspacePreview(image: image)
-                            } else {
-                                workspacePlaceholder
-                            }
-                        }
-                        .overlay(alignment: .topTrailing) { workspaceNumber(workspace.index + 1) }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: cornerRadius)
-                                .stroke(
-                                    workspace.isActive
-                                        ? workspace.originalWorkspace.isOnTheCurrentScreen
-                                            ? Color.positive
-                                            : Color.teal
-                                        : Color.black.opacity(0.5),
-                                    lineWidth: 1.0
-                                )
-                        )
-                        .compositingGroup()
-                        .shadow(
-                            color: .black.opacity(workspace.screenshotData != nil ? 0.35 : 0.0),
-                            radius: 4.0,
-                            x: 0.0,
-                            y: 1.0
-                        )
-                    }
-                    .onTapGesture { viewModel.onWorkspaceTap(workspace) }
-                }
+        LazyVGrid(columns: columns, spacing: viewModel.numberOfRows == 2 ? 90.0 : 60.0) {
+            ForEach(viewModel.workspaces, id: \.index) { workspace in
+                workspaceTile(workspace)
             }
-            .hidden(!viewModel.isVisible)
-            .transition(.scale(scale: 1.1, anchor: .center))
         }
+        .hidden(!viewModel.isVisible)
+        .transition(.scale(scale: 1.1, anchor: .center))
         .animation(.smooth(duration: 0.3), value: viewModel.isVisible)
         .onAppear { viewModel.isVisible = true }
         .multilineTextAlignment(.center)
@@ -68,6 +36,40 @@ struct SpaceControlView: View {
             }
         }
         .ignoresSafeArea()
+    }
+
+    private func workspaceTile(_ workspace: SpaceControlWorkspace) -> some View {
+        VStack(alignment: .leading, spacing: 16.0) {
+            workspaceName(workspace)
+
+            Group {
+                if let image = workspace.screenshotData.flatMap(NSImage.init(data:)) {
+                    workspacePreview(image: image)
+                } else {
+                    workspacePlaceholder
+                }
+            }
+            .overlay(alignment: .topTrailing) { workspaceNumber(workspace.index + 1) }
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(
+                        workspace.isActive
+                            ? workspace.originalWorkspace.isOnTheCurrentScreen
+                                ? Color.positive
+                                : Color.teal
+                            : Color.black.opacity(0.5),
+                        lineWidth: 1.0
+                    )
+            )
+            .compositingGroup()
+            .shadow(
+                color: .black.opacity(workspace.screenshotData != nil ? 0.35 : 0.0),
+                radius: 4.0,
+                x: 0.0,
+                y: 1.0
+            )
+        }
+        .onTapGesture { viewModel.onWorkspaceTap(workspace) }
     }
 
     private var workspacePlaceholder: some View {

@@ -16,6 +16,12 @@ extension AXUIElement {
         setAttribute(.position, value: positionRef)
     }
 
+    func setSize(_ size: CGSize) {
+        var size = size
+        let sizeRef = AXValueCreate(.cgSize, &size)
+        setAttribute(.size, value: sizeRef)
+    }
+
     func focus() {
         AXUIElementPerformAction(self, NSAccessibility.Action.raise as CFString)
     }

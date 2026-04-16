@@ -33,6 +33,8 @@ extension HotKeyName {
     static let showUnassignedApps = Self("showUnassignedApps")
     static let hideUnassignedApps = Self("hideUnassignedApps")
     static let hideAllApps = Self("hideAllApps")
+    static let cycleWindowsForward = Self("cycleWindowsForward")
+    static let cycleWindowsBackward = Self("cycleWindowsBackward")
     static let nextWorkspace = Self("nextWorkspace")
     static let previousWorkspace = Self("previousWorkspace")
     static let recentWorkspace = Self("recentWorkspace")

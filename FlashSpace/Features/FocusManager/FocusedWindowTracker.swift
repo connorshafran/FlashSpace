@@ -37,8 +37,17 @@ final class FocusedWindowTracker {
             .filter { $0.activationPolicy == .regular }
             .removeDuplicates()
             .sink { [weak self] app in
-                self?.activeApplicationChanged(app, force: false)
-                self?.autoAssignAppToWorkspaceIfNeeded(app)
+                // Ignore Finder desktop interactions (clicking wallpaper, Show Desktop, etc.)
+                guard !app.isFinderDesktopInteraction else { return }
+
+                if app.isFinder {
+                    self?.handleFinderWindowFocus(app)
+                } else {
+                    self?.clearFinderFocusForActiveWorkspace()
+                    self?.temporarilyAssignAppIfNeeded(app)
+                    self?.activeApplicationChanged(app, force: false)
+                    self?.autoAssignAppToWorkspaceIfNeeded(app)
+                }
             }
             .store(in: &cancellables)
 
@@ -61,6 +70,7 @@ final class FocusedWindowTracker {
     private func activateWorkspaceForFocusedApp(force: Bool = false) {
         DispatchQueue.main.async {
             guard let activeApp = NSWorkspace.shared.frontmostApplication else { return }
+            guard !activeApp.isFinderDesktopInteraction else { return }
 
             self.activeApplicationChanged(activeApp, force: force)
         }
@@ -69,10 +79,8 @@ final class FocusedWindowTracker {
     private func activeApplicationChanged(_ app: NSRunningApplication, force: Bool) {
         let workspaceSettings = settingsRepository.workspaceSettings
         let pipSettings = settingsRepository.pictureInPictureSettings
-        let shouldActivate = workspaceSettings.activeWorkspaceOnFocusChange &&
-            (!workspaceSettings.autoAssignAppsToWorkspaces || !workspaceSettings.autoAssignAlreadyAssignedApps)
 
-        guard force || shouldActivate else { return }
+        guard force || workspaceSettings.activeWorkspaceOnFocusChange else { return }
 
         let activeWorkspaces = workspaceManager.activeWorkspace.values
 
@@ -82,13 +90,23 @@ final class FocusedWindowTracker {
         // Skip if the app is floating
         guard !settingsRepository.floatingAppsSettings.floatingApps.containsApp(app) else { return }
 
+        // Finder is managed per-window by FinderWindowManager, not as a whole app
+        guard !app.isFinder else { return }
+
         workspaceManager.invalidateInactiveWorkspaces()
 
         // Find the workspace that contains the app.
-        // The same app can be in multiple workspaces, the highest priority has the one
-        // from the active workspace.
-        guard let workspace = (activeWorkspaces + workspaceRepository.workspaces)
-            .first(where: { $0.apps.containsApp(app) }) else { return }
+        // Temp assignments take priority (they suppress permanent assignments
+        // when an app has been deliberately moved via minimize/drag).
+        // Among permanent assignments, active workspaces are checked first.
+        let workspace: Workspace? =
+            workspaceRepository.workspaces.first(where: {
+                workspaceManager.isTemporaryApp(app.toMacApp, in: $0.id)
+            }) ??
+            (activeWorkspaces + workspaceRepository.workspaces).first(where: {
+                $0.apps.containsApp(app)
+            })
+        guard let workspace else { return }
 
         // Skip if the workspace is already active
         guard activeWorkspaces.count(where: { $0.id == workspace.id }) < workspace.displays.count else { return }
@@ -121,15 +139,95 @@ final class FocusedWindowTracker {
         }
     }
 
-    private func autoAssignAppToWorkspaceIfNeeded(_ app: NSRunningApplication) {
-        guard settingsRepository.workspaceSettings.autoAssignAppsToWorkspaces else { return }
+    private func clearFinderFocusForActiveWorkspace() {
+        let display = DisplayName.current
+        let activeWorkspaces = workspaceManager.activeWorkspace.values
+        guard let activeWorkspace = activeWorkspaces.first(where: { $0.displays.contains(display) })
+            ?? activeWorkspaces.first else { return }
+
+        AppDependencies.shared.finderWindowManager.clearFinderFocus(for: activeWorkspace.id)
+    }
+
+    private func handleFinderWindowFocus(_ app: NSRunningApplication) {
+        // Track which workspace this Finder window belongs to
+        let display = DisplayName.current
+        let activeWorkspaces = workspaceManager.activeWorkspace.values
+        guard let activeWorkspace = activeWorkspaces.first(where: { $0.displays.contains(display) })
+            ?? activeWorkspaces.first else { return }
+
+        let finderWindowManager = AppDependencies.shared.finderWindowManager
+        finderWindowManager.trackFocusedFinderWindow(in: activeWorkspace.id)
+    }
+
+    private func temporarilyAssignAppIfNeeded(_ app: NSRunningApplication) {
+        guard settingsRepository.workspaceSettings.enableTemporaryAppAssignment else { return }
+
+        // Finder is managed per-window by FinderWindowManager, not as a whole app
+        guard !app.isFinder else { return }
 
         // Skip if the app is floating
         guard !settingsRepository.floatingAppsSettings.floatingApps.containsApp(app) else { return }
 
+        // Find the active workspace on the current display
+        let display = DisplayName.current
+        let activeWorkspaces = workspaceManager.activeWorkspace.values
+        let activeWorkspace = activeWorkspaces.first { $0.displays.contains(display) }
+            ?? activeWorkspaces.first
+
+        guard let activeWorkspace else { return }
+
+        let isPermanentlyAssigned = workspaceRepository.workspaces.contains { $0.apps.containsApp(app) }
+        let isTempAssigned = workspaceManager.hasTemporaryAssignment(for: app.toMacApp)
+        let isAssigned = isPermanentlyAssigned || isTempAssigned
+
+        // Unassigned apps: temp assign to the current workspace (existing behavior)
+        guard isAssigned else {
+            workspaceManager.temporarilyAssignApp(app.toMacApp, to: activeWorkspace)
+            return
+        }
+
+        // Find the app's "home" workspace (temp takes priority over perm)
+        let homeWorkspace: Workspace? =
+            workspaceRepository.workspaces.first(where: {
+                workspaceManager.isTemporaryApp(app.toMacApp, in: $0.id)
+            }) ??
+            workspaceRepository.workspaces.first(where: { $0.apps.containsApp(app) })
+
+        // Already on the home workspace → clean up any stale borrow state
+        if homeWorkspace?.id == activeWorkspace.id {
+            workspaceManager.removeBorrowedApp(app.toMacApp)
+            return
+        }
+
+        // App is assigned to a different workspace. Never move its assignment
+        // implicitly — only the "Assign App" hotkey should do that.
+
+        // Switch workspace on app focus ON → let activeApplicationChanged
+        // switch to the app's home workspace.
+        if settingsRepository.workspaceSettings.activeWorkspaceOnFocusChange {
+            return
+        }
+
+        // Switch workspace on app focus OFF → borrow the app (visible on this
+        // workspace until the user returns to the app's home workspace).
+        workspaceManager.borrowApp(app.toMacApp, to: activeWorkspace)
+    }
+
+    private func autoAssignAppToWorkspaceIfNeeded(_ app: NSRunningApplication) {
+        guard settingsRepository.workspaceSettings.autoAssignAppsToWorkspaces else { return }
+
+        // Finder is managed per-window by FinderWindowManager
+        guard !app.isFinder else { return }
+
+        // Skip if the app is floating
+        guard !settingsRepository.floatingAppsSettings.floatingApps.containsApp(app) else { return }
+
+        // Skip if the app already has a temp assignment (runtime position)
+        guard !workspaceManager.hasTemporaryAssignment(for: app.toMacApp) else { return }
+
         let workspaceWithApp = workspaceRepository.workspaces.first { $0.apps.containsApp(app) }
 
-        // Skip if the app is already assigned to a workspace
+        // Skip if the app is already assigned to a workspace (default position)
         guard settingsRepository.workspaceSettings.autoAssignAlreadyAssignedApps ||
             workspaceWithApp == nil else { return }
 
@@ -147,7 +245,7 @@ final class FocusedWindowTracker {
         }
 
         if let activeWorkspace, activeWorkspace.id != workspaceWithApp?.id {
-            workspaceManager.assignApp(app.toMacApp, to: activeWorkspace)
+            workspaceManager.temporarilyAssignApp(app.toMacApp, to: activeWorkspace)
         }
     }
 }

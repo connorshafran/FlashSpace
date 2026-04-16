@@ -60,6 +60,16 @@ extension NSRunningApplication {
             ?? []
     }
 
+    /// Returns all windows including minimized ones (which may have no frame).
+    var allWindowElements: [AXUIElement] {
+        guard !isPython else { return [] }
+
+        let appElement = AXUIElementCreateApplication(processIdentifier)
+        let windows: [AXUIElement]? = appElement.getAttribute(.windows)
+
+        return windows?.filter { $0.role == "AXWindow" } ?? []
+    }
+
     func isOnAnyDisplay(_ displays: Set<DisplayName>) -> Bool {
         !allDisplays.isDisjoint(with: displays)
     }

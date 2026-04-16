@@ -57,6 +57,8 @@ struct AppSettings: Codable {
     var restoreHiddenAppsOnSwitch: Bool?
     var enableWorkspaceTransitions: Bool?
     var showRecentWorkspaceWhenActivatedTwice: Bool?
+    var enableTemporaryAppAssignment: Bool?
+    var isolateSecondaryDisplays: Bool?
     var workspaceTransitionDuration: Double?
     var workspaceTransitionDimming: Double?
 
@@ -73,6 +75,8 @@ struct AppSettings: Codable {
     var assignVisibleApps: AppHotKey?
     var hideUnassignedApps: AppHotKey?
     var hideAllApps: AppHotKey?
+    var cycleWindowsForward: AppHotKey?
+    var cycleWindowsBackward: AppHotKey?
     var alternativeDisplays: String?
     var enablePictureInPictureSupport: Bool?
     var switchWorkspaceWhenPipCloses: Bool?
@@ -95,7 +99,6 @@ struct AppSettings: Codable {
     var spaceControlHideEmptyWorkspaces: Bool?
     var spaceControlUpdateScreenshotsOnOpen: Bool?
     var spaceControlNumberOfColumns: Int?
-
     // Workspace Switcher
     var enableWorkspaceSwitcher: Bool?
     var showWorkspaceSwitcher: AppHotKey?

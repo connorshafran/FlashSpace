@@ -78,7 +78,7 @@ struct MainView: View {
 
     private var assignedApps: some View {
         VStack(alignment: .leading) {
-            Text("Assigned Apps:")
+            Text("Default Apps:")
 
             List(
                 viewModel.workspaceApps ?? [],

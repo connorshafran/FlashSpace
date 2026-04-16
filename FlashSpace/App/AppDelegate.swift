@@ -43,5 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         AppDependencies.shared.pictureInPictureManager.restoreAllWindows()
+        AppDependencies.shared.finderWindowManager.restoreAllWindows()
     }
 }

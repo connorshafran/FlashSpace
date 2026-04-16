@@ -191,17 +191,8 @@ enum WorkspaceSwitcher {
         window.isOpaque = false
         window.backgroundColor = .clear
 
-        if #available(macOS 26.0, *) {
-            let effect = NSGlassEffectView()
-            effect.appearance = .init(named: .darkAqua)
-            effect.cornerRadius = 44
-            effect.contentView = contentView
-            effect.clipsToBounds = true
-            window.contentView = effect
-        } else {
-            contentView.appearance = .init(named: .darkAqua)
-            window.contentView = contentView
-        }
+        contentView.appearance = .init(named: .darkAqua)
+        window.contentView = contentView
     }
 
     private static func calculateWindowFrame(for viewModel: WorkspaceSwitcherViewModel) -> NSRect {

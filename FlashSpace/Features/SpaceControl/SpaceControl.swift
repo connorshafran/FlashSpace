@@ -70,12 +70,12 @@ enum SpaceControl {
 
         if window != nil { hide() }
 
-        Task { @MainActor in
-            if settings.spaceControlUpdateScreenshotsOnOpen {
-                await AppDependencies.shared.workspaceScreenshotManager.updateScreenshots()
-            }
-            showWindow()
+        if settings.spaceControlUpdateScreenshotsOnOpen {
+            // Fast synchronous capture of only the current workspace (~5-15ms).
+            // Other workspaces already have screenshots from their last transition.
+            AppDependencies.shared.workspaceScreenshotManager.captureCurrentWorkspace()
         }
+        showWindow()
     }
 
     private static func showWindow() {

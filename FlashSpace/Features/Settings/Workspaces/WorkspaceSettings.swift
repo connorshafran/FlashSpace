@@ -21,6 +21,8 @@ final class WorkspaceSettings: ObservableObject {
     @Published var keepUnassignedAppsOnSwitch = false
     @Published var restoreHiddenAppsOnSwitch = true
     @Published var showRecentWorkspaceWhenActivatedTwice = false
+    @Published var enableTemporaryAppAssignment = false
+    @Published var isolateSecondaryDisplays = false
     @Published var enableWorkspaceTransitions = false
     @Published var workspaceTransitionDuration = 0.3
     @Published var workspaceTransitionDimming = 0.2
@@ -32,6 +34,8 @@ final class WorkspaceSettings: ObservableObject {
     @Published var hideUnassignedApps: AppHotKey?
     @Published var showUnassignedApps: AppHotKey?
     @Published var hideAllApps: AppHotKey?
+    @Published var cycleWindowsForward: AppHotKey?
+    @Published var cycleWindowsBackward: AppHotKey?
 
     @Published var loopWorkspaces = true
     @Published var loopWorkspacesOnAllDisplays = false
@@ -71,6 +75,8 @@ final class WorkspaceSettings: ObservableObject {
             $restoreHiddenAppsOnSwitch.settingsPublisher(),
             $enableWorkspaceTransitions.settingsPublisher(),
             $showRecentWorkspaceWhenActivatedTwice.settingsPublisher(),
+            $enableTemporaryAppAssignment.settingsPublisher(),
+            $isolateSecondaryDisplays.settingsPublisher(),
             $workspaceTransitionDuration.settingsPublisher(debounce: true),
             $workspaceTransitionDimming.settingsPublisher(debounce: true),
 
@@ -81,6 +87,8 @@ final class WorkspaceSettings: ObservableObject {
             $hideUnassignedApps.settingsPublisher(),
             $showUnassignedApps.settingsPublisher(),
             $hideAllApps.settingsPublisher(),
+            $cycleWindowsForward.settingsPublisher(),
+            $cycleWindowsBackward.settingsPublisher(),
 
             $loopWorkspaces.settingsPublisher(),
             $loopWorkspacesOnAllDisplays.settingsPublisher(),
@@ -116,6 +124,8 @@ extension WorkspaceSettings: SettingsProtocol {
         restoreHiddenAppsOnSwitch = appSettings.restoreHiddenAppsOnSwitch ?? true
         enableWorkspaceTransitions = appSettings.enableWorkspaceTransitions ?? false
         showRecentWorkspaceWhenActivatedTwice = appSettings.showRecentWorkspaceWhenActivatedTwice ?? false
+        enableTemporaryAppAssignment = appSettings.enableTemporaryAppAssignment ?? false
+        isolateSecondaryDisplays = appSettings.isolateSecondaryDisplays ?? false
         workspaceTransitionDuration = min(appSettings.workspaceTransitionDuration ?? 0.3, 0.5)
         workspaceTransitionDimming = min(appSettings.workspaceTransitionDimming ?? 0.2, 0.5)
 
@@ -126,6 +136,8 @@ extension WorkspaceSettings: SettingsProtocol {
         hideUnassignedApps = appSettings.hideUnassignedApps
         showUnassignedApps = appSettings.showUnassignedApps
         hideAllApps = appSettings.hideAllApps
+        cycleWindowsForward = appSettings.cycleWindowsForward
+        cycleWindowsBackward = appSettings.cycleWindowsBackward
 
         loopWorkspaces = appSettings.loopWorkspaces ?? true
         loopWorkspacesOnAllDisplays = appSettings.loopWorkspacesOnAllDisplays ?? false
@@ -152,6 +164,8 @@ extension WorkspaceSettings: SettingsProtocol {
         appSettings.restoreHiddenAppsOnSwitch = restoreHiddenAppsOnSwitch
         appSettings.enableWorkspaceTransitions = enableWorkspaceTransitions
         appSettings.showRecentWorkspaceWhenActivatedTwice = showRecentWorkspaceWhenActivatedTwice
+        appSettings.enableTemporaryAppAssignment = enableTemporaryAppAssignment
+        appSettings.isolateSecondaryDisplays = isolateSecondaryDisplays
         appSettings.workspaceTransitionDuration = workspaceTransitionDuration
         appSettings.workspaceTransitionDimming = workspaceTransitionDimming
 
@@ -162,6 +176,8 @@ extension WorkspaceSettings: SettingsProtocol {
         appSettings.hideUnassignedApps = hideUnassignedApps
         appSettings.showUnassignedApps = showUnassignedApps
         appSettings.hideAllApps = hideAllApps
+        appSettings.cycleWindowsForward = cycleWindowsForward
+        appSettings.cycleWindowsBackward = cycleWindowsBackward
 
         appSettings.loopWorkspaces = loopWorkspaces
         appSettings.loopWorkspacesOnAllDisplays = loopWorkspacesOnAllDisplays

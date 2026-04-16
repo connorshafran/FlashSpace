@@ -33,6 +33,12 @@ struct WorkspacesSettingsView: View {
                 }
             }
 
+            Toggle("Isolate Secondary Displays", isOn: $settings.isolateSecondaryDisplays)
+                .help(
+                    "When enabled, workspace switching only affects the workspace's assigned display. " +
+                    "Apps on other displays remain visible and are not affected by workspace changes."
+                )
+
             Text("Static Mode requires you to manually assign workspaces to displays.\n\n" +
                 "Dynamic Mode automatically assigns workspaces to displays " +
                 "based on where your applications are located. In this mode, a single workspace can span across multiple displays."
@@ -51,6 +57,11 @@ struct WorkspacesSettingsView: View {
                 Toggle("Apply To Currently Assigned Apps", isOn: $settings.autoAssignAlreadyAssignedApps)
                     .padding(.leading, 16)
             }
+            Toggle("Enable Temporary App Assignment", isOn: $settings.enableTemporaryAppAssignment)
+                .help(
+                    "When enabled, unassigned apps that come into focus will be temporarily assigned to the active workspace. " +
+                    "They are removed when closed or when focused from a different workspace."
+                )
         }
     }
 
@@ -115,6 +126,8 @@ struct WorkspacesSettingsView: View {
             hotkey("Show Unassigned Apps", name: .showUnassignedApps, for: $settings.showUnassignedApps)
             hotkey("Hide Unassigned Apps", name: .hideUnassignedApps, for: $settings.hideUnassignedApps)
             hotkey("Hide All Apps", name: .hideAllApps, for: $settings.hideAllApps)
+            hotkey("Cycle Windows Forward", name: .cycleWindowsForward, for: $settings.cycleWindowsForward)
+            hotkey("Cycle Windows Backward", name: .cycleWindowsBackward, for: $settings.cycleWindowsBackward)
         }
     }
 

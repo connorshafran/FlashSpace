@@ -35,7 +35,9 @@ final class WorkspaceHotKeys {
             getHideAllAppsHotKey(),
             getRecentWorkspaceHotKey(),
             getCycleWorkspacesHotKey(next: false),
-            getCycleWorkspacesHotKey(next: true)
+            getCycleWorkspacesHotKey(next: true),
+            getCycleWindowsHotKey(next: true),
+            getCycleWindowsHotKey(next: false)
         ] +
             workspaceRepository.workspaces
             .flatMap { [getActivateHotKey(for: $0), getAssignAppHotKey(for: $0)] }
@@ -122,7 +124,11 @@ final class WorkspaceHotKeys {
         let action = { [weak self] in
             guard let self, let activeApp = NSWorkspace.shared.frontmostApplication else { return }
 
-            if workspaceRepository.workspaces.flatMap(\.apps).containsApp(activeApp) {
+            let macApp = activeApp.toMacApp
+            let isAssigned = workspaceRepository.workspaces.flatMap(\.apps).containsApp(activeApp) ||
+                workspaceManager.hasTemporaryAssignment(for: macApp)
+
+            if isAssigned {
                 unassignApp()
             } else {
                 assignApp(to: nil)
@@ -220,6 +226,24 @@ final class WorkspaceHotKeys {
             action: action
         )
     }
+
+    private func getCycleWindowsHotKey(next: Bool) -> RecordedHotKey? {
+        let shortcut = next
+            ? workspaceSettings.cycleWindowsForward
+            : workspaceSettings.cycleWindowsBackward
+
+        guard let shortcut else { return nil }
+
+        let action: () -> () = { [weak self] in
+            self?.cycleWindows(next: next)
+        }
+
+        return RecordedHotKey(
+            name: next ? .cycleWindowsForward : .cycleWindowsBackward,
+            hotKey: shortcut,
+            action: action
+        )
+    }
 }
 
 extension WorkspaceHotKeys {
@@ -242,9 +266,22 @@ extension WorkspaceHotKeys {
             return
         }
 
+        // Finder is managed per-window: assign only the focused Finder window
+        if activeApp.isFinder {
+            let finderWindowManager = AppDependencies.shared.finderWindowManager
+            finderWindowManager.assignFocusedFinderWindow(to: workspace.id)
+
+            Toast.showWith(
+                icon: "square.stack.3d.up",
+                message: "Finder Window - Assigned To \(workspace.name)",
+                textColor: .positive
+            )
+            return
+        }
+
         guard let updatedWorkspace = workspaceRepository.findWorkspace(with: workspace.id) else { return }
 
-        workspaceManager.assignApp(activeApp.toMacApp, to: updatedWorkspace)
+        workspaceManager.moveAppToWorkspace(activeApp.toMacApp, to: updatedWorkspace)
 
         if !workspace.isDynamic {
             activeApp.centerApp(display: workspace.display)
@@ -252,7 +289,7 @@ extension WorkspaceHotKeys {
 
         Toast.showWith(
             icon: "square.stack.3d.up",
-            message: "\(appName) - Assigned To \(workspace.name)",
+            message: "\(appName) - Moved To \(workspace.name)",
             textColor: .positive
         )
     }
@@ -270,11 +307,13 @@ extension WorkspaceHotKeys {
         let visibleApps = NSWorkspace.shared.runningApplications
             .regularVisibleApps(onDisplays: workspace.displays, excluding: floatingAppsSettings.floatingApps)
 
-        workspaceManager.assignApps(visibleApps.map(\.toMacApp), to: workspace)
+        for app in visibleApps {
+            workspaceManager.temporarilyAssignApp(app.toMacApp, to: workspace)
+        }
 
         Toast.showWith(
             icon: "square.stack.3d.up",
-            message: "Assigned \(visibleApps.count) App(s) To \(workspace.name)",
+            message: "Moved \(visibleApps.count) App(s) To \(workspace.name)",
             textColor: .positive
         )
     }
@@ -283,16 +322,125 @@ extension WorkspaceHotKeys {
         guard let activeApp = NSWorkspace.shared.frontmostApplication else { return }
         guard let appName = activeApp.localizedName else { return }
 
-        if workspaceRepository.workspaces.flatMap(\.apps).containsApp(activeApp) == true {
-            Toast.showWith(
-                icon: "square.stack.3d.up.slash",
-                message: "\(appName) - Removed From Workspaces",
-                textColor: .negative
-            )
+        let macApp = activeApp.toMacApp
+        workspaceManager.removeTemporaryApp(macApp)
+        workspaceManager.removeBorrowedApp(macApp)
+
+        Toast.showWith(
+            icon: "square.stack.3d.up.slash",
+            message: "\(appName) - Removed From Workspace",
+            textColor: .negative
+        )
+
+        activeApp.hide()
+    }
+
+    /// An item in the window cycle: either a regular app or a specific Finder window.
+    private enum CycleItem: Equatable {
+        case app(bundleId: String)
+        case finderWindow(windowId: CGWindowID)
+    }
+
+    private func cycleWindows(next: Bool) {
+        // Defer all work to a normal main-queue block to escape the
+        // Carbon hotkey callback context, which appears to crash/deadlock
+        // when accessing certain objects.
+        DispatchQueue.main.async { [weak self] in
+            self?.doCycleWindows(next: next)
+        }
+    }
+
+    private func doCycleWindows(next: Bool) {
+        guard let currentDisplay = DisplayName.currentOptional else { return }
+
+        let isolating = workspaceSettings.isolateSecondaryDisplays && NSScreen.screens.count > 1
+        let workspace = workspaceManager.activeWorkspace[currentDisplay]
+
+        // Without isolation, require an active workspace (existing behavior)
+        guard isolating || workspace != nil else { return }
+
+        let finderBundleId = "com.apple.finder"
+        let finderWindowManager = AppDependencies.shared.finderWindowManager
+
+        // When isolating, cycle only on the current display
+        let cycleDisplays: Set<DisplayName> = isolating
+            ? [currentDisplay]
+            : (workspace?.displays ?? [currentDisplay])
+
+        // Get Finder windows and fresh elements
+        let freshFinderElements: [CGWindowID: AXUIElement]
+        let finderWindowIds: [CGWindowID]
+
+        if isolating {
+            // Display-scoped: get only Finder windows visible on the current display
+            let result = finderWindowManager.visibleFinderWindows(on: cycleDisplays)
+            finderWindowIds = result.ids
+            freshFinderElements = result.elements
+        } else if let ws = workspace {
+            // Workspace-scoped (existing behavior)
+            freshFinderElements = finderWindowManager.refreshTrackedWindows(for: ws.id)
+            finderWindowIds = finderWindowManager.trackedWindowIds(for: ws.id)
+        } else {
+            return
         }
 
-        workspaceRepository.deleteAppFromAllWorkspaces(app: activeApp.toMacApp)
-        activeApp.hide()
-        NotificationCenter.default.post(name: .appsListChanged, object: nil)
+        var items: [CycleItem] = []
+
+        for app in NSWorkspace.shared.runningApplications {
+            guard app.activationPolicy == .regular,
+                  !app.isHidden,
+                  let bundleId = app.bundleIdentifier else { continue }
+            if bundleId == finderBundleId { continue }
+            guard app.isOnAnyDisplay(cycleDisplays) else { continue }
+
+            let item = CycleItem.app(bundleId: bundleId)
+            if !items.contains(item) { items.append(item) }
+        }
+
+        for wid in finderWindowIds {
+            items.append(.finderWindow(windowId: wid))
+        }
+
+        guard items.count > 1 else { return }
+
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let currentBundleId = frontmostApp?.bundleIdentifier
+        let currentIndex: Int
+        if currentBundleId == finderBundleId {
+            // Query Finder's actual focused window for reliable current position.
+            // lastFocusedWindowId may be stale or nil (e.g., secondary display with no workspace).
+            let focusedWid = frontmostApp?.focusedWindow?.cgWindowId
+            if let focusedWid, let idx = items.firstIndex(of: .finderWindow(windowId: focusedWid)) {
+                currentIndex = idx
+            } else {
+                let lastWid = workspace.flatMap { finderWindowManager.lastFocusedWindowId(for: $0.id) }
+                if let lastWid, let idx = items.firstIndex(of: .finderWindow(windowId: lastWid)) {
+                    currentIndex = idx
+                } else if let idx = items.firstIndex(where: { if case .finderWindow = $0 { return true }; return false }) {
+                    currentIndex = idx
+                } else {
+                    currentIndex = 0
+                }
+            }
+        } else {
+            currentIndex = currentBundleId
+                .flatMap { bid in items.firstIndex(of: .app(bundleId: bid)) } ?? 0
+        }
+
+        let nextIndex: Int
+        if next {
+            nextIndex = (currentIndex + 1) % items.count
+        } else {
+            nextIndex = (currentIndex - 1 + items.count) % items.count
+        }
+
+        switch items[nextIndex] {
+        case .app(let bundleId):
+            NSWorkspace.shared.runningApplications
+                .first { $0.bundleIdentifier == bundleId }?
+                .activate()
+        case .finderWindow(let windowId):
+            finderWindowManager.focusFinderWindow(windowId, elements: freshFinderElements)
+        }
     }
 }

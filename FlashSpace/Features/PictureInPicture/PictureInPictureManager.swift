@@ -192,6 +192,7 @@ final class PictureInPictureManager {
         for code in [SIGTERM, SIGINT] {
             signal(code) {
                 AppDependencies.shared.pictureInPictureManager.restoreAllWindows()
+                AppDependencies.shared.finderWindowManager.restoreAllWindows()
                 exit($0)
             }
         }
