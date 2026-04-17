@@ -569,12 +569,15 @@ extension WorkspaceManager {
 
             activateWorkspace(workspace, setFocus: true)
 
-            // Restore the window position on the target workspace.
+            // Restore the window position on the target workspace and
+            // re-activate so it's on top of the z-order (showApps tried
+            // to focus it while it was off-screen, which doesn't stick).
             if let runningApp, let savedFrame {
                 runningApp.runWithoutAnimations {
                     runningApp.setPosition(savedFrame.origin)
                 }
                 runningApp.raise()
+                runningApp.activate()
             }
         }
     }
