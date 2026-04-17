@@ -39,7 +39,11 @@ final class SpaceControlViewModel: ObservableObject {
     private let displayManager = AppDependencies.shared.displayManager
     private let wallpaperService = AppDependencies.shared.wallpaperService
 
-    init() {
+    /// The screen Space Control is displayed on, used for tile size calculations.
+    private let targetScreen: NSScreen
+
+    init(targetScreen: NSScreen? = nil) {
+        self.targetScreen = targetScreen ?? NSScreen.main ?? NSScreen.screens.first!
         refresh()
 
         self.isVisible = !settings.enableSpaceControlTilesAnimations
@@ -135,7 +139,7 @@ final class SpaceControlViewModel: ObservableObject {
     }
 
     private func calculateTileSize() {
-        let screenFrame = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 3024, height: 1964)
+        let screenFrame = targetScreen.frame
 
         let width = screenFrame.width / CGFloat(numberOfColumns) - 120.0
         let height = screenFrame.height / CGFloat(numberOfRows) - 120.0

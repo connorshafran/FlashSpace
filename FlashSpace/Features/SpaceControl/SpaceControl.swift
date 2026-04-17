@@ -17,6 +17,7 @@ enum SpaceControl {
     private static var transitionInProgress = false
 
     private static var settings: SpaceControlSettings { AppDependencies.shared.spaceControlSettings }
+    private static var workspaceSettings: WorkspaceSettings { AppDependencies.shared.workspaceSettings }
     private static var focusedAppBeforeShow: NSRunningApplication?
 
     static func getHotKey() -> RecordedHotKey? {
@@ -82,15 +83,19 @@ enum SpaceControl {
         guard !transitionInProgress else { return }
 
         let animations = settings.enableSpaceControlAnimations
-        let viewModel = SpaceControlViewModel()
+        let isolating = workspaceSettings.isolateSecondaryDisplays && NSScreen.screens.count > 1
+        let targetScreen = isolating ? (NSScreen.screens.first ?? NSScreen.main!) : NSScreen.main!
+        let viewModel = SpaceControlViewModel(targetScreen: targetScreen)
         let contentView = NSHostingView(
             rootView: SpaceControlView(viewModel: viewModel)
         )
 
         // contentRect is in screen coordinates where (0,0) is bottom-left corner
         // and it is relative to the main screen.
+        // In isolation mode, always open on the primary display since the
+        // secondary display has a single isolated workspace.
         let window = SpaceControlWindow(
-            contentRect: NSScreen.main!.frame,
+            contentRect: targetScreen.frame,
             styleMask: [.borderless],
             backing: .buffered,
             defer: false

@@ -666,9 +666,14 @@ extension WorkspaceManager {
     }
 
     func activateRecentWorkspace() {
-        guard let screen = displayManager.getCursorScreen(),
-              let mostRecentWorkspace = mostRecentWorkspace[screen]
-        else { return }
+        var screen = displayManager.getCursorScreen()
+
+        // In isolation mode, always act on the primary display
+        if workspaceSettings.isolateSecondaryDisplays, NSScreen.screens.count > 1 {
+            screen = NSScreen.screens.first?.localizedName
+        }
+
+        guard let screen, let mostRecentWorkspace = mostRecentWorkspace[screen] else { return }
 
         activateWorkspace(mostRecentWorkspace, setFocus: true)
     }
