@@ -264,7 +264,18 @@ final class WorkspaceManager: ObservableObject {
         let regularApps = NSWorkspace.shared.runningRegularApps
         let tempApps = temporaryApps[workspace.id] ?? []
         let borrowed = borrowedApps[workspace.id] ?? []
-        let workspaceApps = workspace.apps + tempApps + borrowed + floatingAppsSettings.floatingApps
+
+        // Apps that have been moved (temp assignment) or borrowed to another
+        // workspace should not count as "belonging" to this workspace for hiding,
+        // even if they have a default assignment here.
+        let movedAway = temporaryApps.filter { $0.key != workspace.id }
+            .values.flatMap { $0 }.map(\.bundleIdentifier).asSet
+        let borrowedAway = borrowedApps.filter { $0.key != workspace.id }
+            .values.flatMap { $0 }.map(\.bundleIdentifier).asSet
+        let suppressedBundleIds = movedAway.union(borrowedAway)
+
+        let workspaceApps = (workspace.apps + tempApps + borrowed + floatingAppsSettings.floatingApps)
+            .filter { !suppressedBundleIds.contains($0.bundleIdentifier) }
         let isAnyWorkspaceAppRunning = regularApps
             .contains { workspaceApps.containsApp($0) }
         let allTempApps = temporaryApps.values.flatMap { $0 }.map(\.bundleIdentifier)
