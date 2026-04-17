@@ -131,12 +131,22 @@ final class FinderWindowManager {
 
         // If Finder was the last focused thing in this workspace,
         // raise the specific window and activate Finder.
+        // In isolation mode, skip if the window is on a different display
+        // to avoid raising Finder globally (which disrupts other displays).
         if finderWasLastFocused[workspaceId] == true,
            let lastWid = lastFocusedWindow[workspaceId],
            let element = freshElements[lastWid] {
-            Logger.log("Focusing last Finder window (id: \(lastWid)) in workspace")
-            element.focus()
-            finder.activate()
+            let windowOnTargetDisplay: Bool = {
+                guard let displays = onDisplays, let frame = element.frame,
+                      let display = frame.getDisplay() else { return true }
+                return displays.contains(display)
+            }()
+
+            if windowOnTargetDisplay {
+                Logger.log("Focusing last Finder window (id: \(lastWid)) in workspace")
+                element.focus()
+                finder.activate()
+            }
         }
     }
 
