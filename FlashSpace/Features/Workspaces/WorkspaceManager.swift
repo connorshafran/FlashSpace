@@ -552,7 +552,30 @@ extension WorkspaceManager {
         temporarilyAssignApp(app, to: workspace)
 
         if switchToWorkspace {
+            // Move the app's window off-screen before the workspace switch so
+            // the source workspace's screenshot (captured at the start of
+            // activateWorkspace) won't include the moved app. This is synchronous
+            // unlike NSRunningApplication.hide() which is async.
+            let runningApp = NSWorkspace.shared.runningApplications.find(app)
+            var savedFrame: CGRect?
+
+            if let runningApp, let frame = runningApp.frame {
+                savedFrame = frame
+                let maxX = NSScreen.screens.map(\.frame.maxX).max() ?? 2000
+                runningApp.runWithoutAnimations {
+                    runningApp.setPosition(CGPoint(x: maxX + 100, y: frame.origin.y))
+                }
+            }
+
             activateWorkspace(workspace, setFocus: true)
+
+            // Restore the window position on the target workspace.
+            if let runningApp, let savedFrame {
+                runningApp.runWithoutAnimations {
+                    runningApp.setPosition(savedFrame.origin)
+                }
+                runningApp.raise()
+            }
         }
     }
 
