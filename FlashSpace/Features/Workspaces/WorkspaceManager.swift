@@ -218,6 +218,13 @@ final class WorkspaceManager: ObservableObject {
                     floatingApps.containsApp($0) && $0.isOnAnyDisplay(displays)
             }
 
+        // In isolation mode, don't raise apps that are visible on other displays
+        if workspaceSettings.isolateSecondaryDisplays, NSScreen.screens.count > 1 {
+            appsToShow = appsToShow.filter {
+                $0.isHidden || $0.isMinimized || $0.isOnAnyDisplay(displays)
+            }
+        }
+
         observeFocusCancellable = nil
         defer { observeFocus() }
 

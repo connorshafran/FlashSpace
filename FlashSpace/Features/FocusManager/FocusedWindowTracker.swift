@@ -108,6 +108,17 @@ final class FocusedWindowTracker {
             })
         guard let workspace else { return }
 
+        // In isolation mode, don't switch if the workspace is on a different
+        // display than where the app currently is.
+        if workspaceSettings.isolateSecondaryDisplays,
+           NSScreen.screens.count > 1,
+           let appDisplay = app.display {
+            let wsDisplay = AppDependencies.shared.displayManager.resolveDisplay(workspace.display)
+            if appDisplay != wsDisplay {
+                return
+            }
+        }
+
         // Skip if the workspace is already active
         guard activeWorkspaces.count(where: { $0.id == workspace.id }) < workspace.displays.count else { return }
 
@@ -197,6 +208,23 @@ final class FocusedWindowTracker {
         if homeWorkspace?.id == activeWorkspace.id {
             workspaceManager.removeBorrowedApp(app.toMacApp)
             return
+        }
+
+        // In isolation mode, if the app is on a different display than its
+        // home workspace, reassign it to the workspace active on the app's
+        // current display. This prevents cross-display workspace switches.
+        if settingsRepository.workspaceSettings.isolateSecondaryDisplays,
+           NSScreen.screens.count > 1,
+           let appDisplay = app.display,
+           let homeWs = homeWorkspace {
+            let homeDisplay = AppDependencies.shared.displayManager.resolveDisplay(homeWs.display)
+            if appDisplay != homeDisplay,
+               let targetWorkspace = workspaceManager.activeWorkspace[appDisplay] {
+                workspaceManager.removeBorrowedApp(app.toMacApp)
+                workspaceManager.temporarilyAssignApp(app.toMacApp, to: targetWorkspace)
+                Logger.log("Cross-display reassign: \(app.localizedName ?? "") → \(targetWorkspace.name)")
+                return
+            }
         }
 
         // App is assigned to a different workspace. Never move its assignment
