@@ -20,3 +20,6 @@ fastlane/report.xml
 fastlane/README.md
 FlashSpace/Info.plist
 .dsyms/
+
+.DS_Store
+.claude/settings.local.json
