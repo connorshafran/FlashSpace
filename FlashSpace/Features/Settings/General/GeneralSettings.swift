@@ -13,9 +13,6 @@ final class GeneralSettings: ObservableObject {
     @Published var toggleFlashSpace: AppHotKey?
     @Published var showFloatingNotifications = true
     @Published var pauseResumeFlashSpace: AppHotKey?
-    @Published var checkForUpdatesAutomatically = false {
-        didSet { UpdatesManager.shared.autoCheckForUpdates = checkForUpdatesAutomatically }
-    }
 
     private var observer: AnyCancellable?
     private let updateSubject = PassthroughSubject<(), Never>()
@@ -26,7 +23,6 @@ final class GeneralSettings: ObservableObject {
         observer = Publishers.MergeMany(
             $showFlashSpace.settingsPublisher(),
             $toggleFlashSpace.settingsPublisher(),
-            $checkForUpdatesAutomatically.settingsPublisher(),
             $showFloatingNotifications.settingsPublisher(),
             $pauseResumeFlashSpace.settingsPublisher()
         )
@@ -44,7 +40,6 @@ extension GeneralSettings: SettingsProtocol {
         observer = nil
         showFlashSpace = appSettings.showFlashSpace
         toggleFlashSpace = appSettings.toggleFlashSpace
-        checkForUpdatesAutomatically = appSettings.checkForUpdatesAutomatically ?? false
         showFloatingNotifications = appSettings.showFloatingNotifications ?? true
         pauseResumeFlashSpace = appSettings.pauseResumeFlashSpace
         observe()
@@ -53,7 +48,6 @@ extension GeneralSettings: SettingsProtocol {
     func update(_ appSettings: inout AppSettings) {
         appSettings.showFlashSpace = showFlashSpace
         appSettings.toggleFlashSpace = toggleFlashSpace
-        appSettings.checkForUpdatesAutomatically = checkForUpdatesAutomatically
         appSettings.showFloatingNotifications = showFloatingNotifications
         appSettings.pauseResumeFlashSpace = pauseResumeFlashSpace
     }

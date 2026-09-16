@@ -112,10 +112,6 @@ struct FlashSpaceMenuBar: Scene {
                 }
             }
 
-            Button("Check for Updates") {
-                UpdatesManager.shared.checkForUpdates()
-            }
-
             Divider()
 
             Button("Quit") {

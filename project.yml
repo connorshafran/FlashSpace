@@ -21,9 +21,6 @@ packages:
   Yams:
     github: jpsim/Yams
     from: 5.2.0
-  Sparkle:
-    github: sparkle-project/Sparkle
-    from: 2.7.0
   KeyboardShortcuts:
     github: wojciech-kulik/KeyboardShortcuts
     branch: main
@@ -39,8 +36,6 @@ targets:
     info:
       path: FlashSpace/Info.plist
       properties:
-        SUPublicEDKey: hbvsYKL66p7w+2WUBbAqOvUcUNckSstWcrwTaCBwZJM=
-        SUFeedURL: https://wojciechkulik.pl/FlashSpace/appcast.xml
 
     settings:
       base:
@@ -69,7 +64,6 @@ targets:
       - package: SymbolPicker
       - package: TOMLKit
       - package: Yams
-      - package: Sparkle
       - package: KeyboardShortcuts
 
     preBuildScripts:

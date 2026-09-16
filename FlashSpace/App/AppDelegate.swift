@@ -17,6 +17,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Accessibility calls to an unresponsive app block until they time out
+        // (6s by default), freezing workspace switching. Set on the system-wide
+        // element, the timeout applies to all Accessibility calls.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 3.0)
+
         AppDependencies.shared.hotKeysManager.enableAll()
 
         NotificationCenter.default

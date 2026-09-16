@@ -11,6 +11,7 @@
 //
 
 import AppKit
+import Combine
 
 final class FinderWindowManager {
     /// Which workspace each tracked Finder window belongs to.
@@ -26,7 +27,33 @@ final class FinderWindowManager {
     /// (as opposed to another app being focused after the Finder window).
     private(set) var finderWasLastFocused: [WorkspaceID: Bool] = [:]
 
+    private var focusObserver: AXObserver?
+    private var focusObserverPid: pid_t?
+    private var cancellables = Set<AnyCancellable>()
+
+    init() {
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didLaunchApplicationNotification)
+            .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
+            .filter(\.isFinder)
+            .sink { [weak self] _ in self?.observeFinderFocus() }
+            .store(in: &cancellables)
+
+        observeFinderFocus()
+    }
+
     // MARK: - Public API
+
+    /// Returns the workspace of a Finder window that is currently hidden off-screen.
+    func workspaceOfHiddenWindow(_ windowId: CGWindowID) -> WorkspaceID? {
+        savedFrames[windowId] != nil ? windowWorkspace[windowId] : nil
+    }
+
+    /// Makes the window the one that gets focus when its workspace is activated.
+    func focusOnActivation(_ windowId: CGWindowID, in workspaceId: WorkspaceID) {
+        lastFocusedWindow[workspaceId] = windowId
+        finderWasLastFocused[workspaceId] = true
+    }
 
     /// Called when a Finder window gains focus while a workspace is active.
     /// Associates the focused window with the given workspace.
@@ -124,6 +151,7 @@ final class FinderWindowManager {
         // References go stale when Finder is raised/shown by FlashSpace.
         let freshElements = refreshedWindowElements(for: finder)
         pruneClosedWindows(of: finder)
+        observeFinderFocus() // retry if Finder wasn't ready when it launched
 
         finder.runWithoutAnimations {
             recoverStrandedWindows(activating: workspaceId, elements: freshElements, onDisplays: onDisplays)
@@ -349,43 +377,6 @@ final class FinderWindowManager {
         return elements
     }
 
-    /// Generates an off-screen position at the right edge of the rightmost display.
-    /// The y coordinate is kept within that display, so macOS doesn't consider the
-    /// window lost and move it back on-screen.
-    private func hiddenPosition(for currentFrame: CGRect) -> CGPoint {
-        guard let rightmost = NSScreen.screens.map(\.normalizedFrame).max(by: { $0.maxX < $1.maxX }) else {
-            return CGPoint(x: currentFrame.maxX + 10000, y: currentFrame.origin.y)
-        }
-
-        let y = currentFrame.origin.y + CGFloat.random(in: 1...100)
-        return CGPoint(
-            x: rightmost.maxX - 1,
-            y: max(rightmost.minY + 50, min(y, rightmost.maxY - 100))
-        )
-    }
-
-    /// A window is off-screen when no display shows a meaningful part of it.
-    private func isOffScreen(_ frame: CGRect) -> Bool {
-        !NSScreen.screens.contains { screen in
-            let visible = screen.normalizedFrame.intersection(frame)
-            return !visible.isNull && visible.width >= 40 && visible.height >= 40
-        }
-    }
-
-    /// Returns the frame's origin if it's visible, otherwise an origin that centers
-    /// the window on the target display (e.g. when its display was disconnected).
-    private func visibleOrigin(for frame: CGRect, onDisplays: Set<DisplayName>?) -> CGPoint {
-        guard isOffScreen(frame) else { return frame.origin }
-
-        let screen = NSScreen.screen(onDisplays?.first) ?? NSScreen.main ?? NSScreen.screens.first
-        guard let bounds = screen?.normalizedFrame else { return frame.origin }
-
-        return CGPoint(
-            x: bounds.midX - frame.width / 2,
-            y: max(bounds.minY, bounds.midY - frame.height / 2)
-        )
-    }
-
     /// Moves a hidden window back on-screen. The saved frame is only dropped once
     /// the window is confirmed visible, so a failed move is retried next time
     /// instead of leaving the window stranded off-screen.
@@ -513,5 +504,77 @@ final class FinderWindowManager {
             savedFrames[wid] = frame
             element.setPosition(position)
         }
+    }
+}
+
+// MARK: - Finder Focus Observer
+extension FinderWindowManager {
+    /// Posts `.finderFocusedWindowChanged` whenever Finder's focused window changes.
+    /// Unlike app activation, this also fires while Finder is already frontmost,
+    /// e.g. when opening a folder that is already open in another window.
+    private func observeFinderFocus() {
+        guard let finder = NSWorkspace.shared.runningApplications.first(where: \.isFinder),
+              finder.processIdentifier != focusObserverPid else { return }
+
+        if let focusObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(focusObserver), .defaultMode)
+            self.focusObserver = nil
+        }
+
+        let callback: AXObserverCallback = { _, _, _, _ in
+            NotificationCenter.default.post(name: .finderFocusedWindowChanged, object: nil)
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(finder.processIdentifier, callback, &observer) == .success,
+              let observer else { return }
+
+        let finderElement = AXUIElementCreateApplication(finder.processIdentifier)
+        let notification = kAXFocusedWindowChangedNotification as CFString
+        guard AXObserverAddNotification(observer, finderElement, notification, nil) == .success else { return }
+
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        focusObserver = observer
+        focusObserverPid = finder.processIdentifier
+    }
+}
+
+// MARK: - Window Geometry
+extension FinderWindowManager {
+    /// Generates an off-screen position at the right edge of the rightmost display.
+    /// The y coordinate is kept within that display, so macOS doesn't consider the
+    /// window lost and move it back on-screen.
+    private func hiddenPosition(for currentFrame: CGRect) -> CGPoint {
+        guard let rightmost = NSScreen.screens.map(\.normalizedFrame).max(by: { $0.maxX < $1.maxX }) else {
+            return CGPoint(x: currentFrame.maxX + 10000, y: currentFrame.origin.y)
+        }
+
+        let y = currentFrame.origin.y + CGFloat.random(in: 1...100)
+        return CGPoint(
+            x: rightmost.maxX - 1,
+            y: max(rightmost.minY + 50, min(y, rightmost.maxY - 100))
+        )
+    }
+
+    /// A window is off-screen when no display shows a meaningful part of it.
+    private func isOffScreen(_ frame: CGRect) -> Bool {
+        !NSScreen.screens.contains { screen in
+            let visible = screen.normalizedFrame.intersection(frame)
+            return !visible.isNull && visible.width >= 40 && visible.height >= 40
+        }
+    }
+
+    /// Returns the frame's origin if it's visible, otherwise an origin that centers
+    /// the window on the target display (e.g. when its display was disconnected).
+    private func visibleOrigin(for frame: CGRect, onDisplays: Set<DisplayName>?) -> CGPoint {
+        guard isOffScreen(frame) else { return frame.origin }
+
+        let screen = NSScreen.screen(onDisplays?.first) ?? NSScreen.main ?? NSScreen.screens.first
+        guard let bounds = screen?.normalizedFrame else { return frame.origin }
+
+        return CGPoint(
+            x: bounds.midX - frame.width / 2,
+            y: max(bounds.minY, bounds.midY - frame.height / 2)
+        )
     }
 }

@@ -10,6 +10,7 @@ import Combine
 
 final class FocusedWindowTracker {
     private var cancellables = Set<AnyCancellable>()
+    private var lastFocusedFinderWindow: CGWindowID?
 
     private let workspaceRepository: WorkspaceRepository
     private let workspaceManager: WorkspaceManager
@@ -39,6 +40,11 @@ final class FocusedWindowTracker {
             .sink { [weak self] app in
                 self?.applicationActivated(app)
             }
+            .store(in: &cancellables)
+
+        NotificationCenter.default
+            .publisher(for: .finderFocusedWindowChanged)
+            .sink { [weak self] _ in self?.finderFocusedWindowChanged() }
             .store(in: &cancellables)
 
         NotificationCenter.default
@@ -180,6 +186,37 @@ final class FocusedWindowTracker {
             ?? activeWorkspaces.first else { return }
 
         AppDependencies.shared.finderWindowManager.clearFinderFocus(for: activeWorkspace.id)
+    }
+
+    /// Opening a folder that is already open in a Finder window hidden on another
+    /// workspace focuses that off-screen window. Switch to its workspace to show it.
+    private func finderFocusedWindowChanged() {
+        guard let finder = NSWorkspace.shared.runningApplications.first(where: \.isFinder) else { return }
+
+        let previousWindow = lastFocusedFinderWindow
+        let focusedWindow = finder.focusedWindow?.cgWindowId
+        lastFocusedFinderWindow = focusedWindow
+
+        let finderWindowManager = AppDependencies.shared.finderWindowManager
+
+        guard let focusedWindow,
+              NSWorkspace.shared.frontmostApplication == finder,
+              // Skip focus changes caused by a workspace switch (raising restored windows)
+              Date().timeIntervalSince(workspaceManager.lastWorkspaceActivation) > 0.4,
+              let workspaceId = finderWindowManager.workspaceOfHiddenWindow(focusedWindow),
+              let workspace = workspaceRepository.findWorkspace(with: workspaceId)
+        else { return }
+
+        // Closing or minimizing the focused window makes Finder focus the next one,
+        // which may be hidden. That isn't a request to show it.
+        if let previousWindow,
+           !finder.allWindowElements.contains(where: { $0.cgWindowId == previousWindow && !$0.isMinimized }) {
+            return
+        }
+
+        Logger.log("Hidden Finder window (id: \(focusedWindow)) was focused - switching to: \(workspace.name)")
+        finderWindowManager.focusOnActivation(focusedWindow, in: workspace.id)
+        workspaceManager.activateWorkspace(workspace, setFocus: false)
     }
 
     private func handleFinderWindowFocus(_ app: NSRunningApplication) {
