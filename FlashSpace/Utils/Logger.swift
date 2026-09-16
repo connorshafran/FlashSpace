@@ -14,10 +14,12 @@ enum Logger {
         return formatter
     }()
 
-    static func log(_ message: String) {
+    /// The message is only evaluated in debug builds, so interpolated values
+    /// (which often query the Accessibility API) cost nothing in release builds.
+    static func log(_ message: @autoclosure () -> String) {
         #if DEBUG
         let dateString = dateFormatter.string(from: Date())
-        print("\(dateString): \(message)")
+        print("\(dateString): \(message())")
         #endif
     }
 

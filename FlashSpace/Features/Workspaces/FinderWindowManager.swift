@@ -123,8 +123,10 @@ final class FinderWindowManager {
         // Refresh AXUIElement references from current window list.
         // References go stale when Finder is raised/shown by FlashSpace.
         let freshElements = refreshedWindowElements(for: finder)
+        pruneClosedWindows(of: finder)
 
         finder.runWithoutAnimations {
+            recoverStrandedWindows(activating: workspaceId, elements: freshElements, onDisplays: onDisplays)
             restoreWindows(for: workspaceId, elements: freshElements, onDisplays: onDisplays)
             hideWindowsNotIn(workspaceId, elements: freshElements, onDisplays: onDisplays)
         }
@@ -185,7 +187,6 @@ final class FinderWindowManager {
         // Track new visible windows not yet assigned to any workspace.
         // Filter out internal/invisible Finder windows (e.g. desktop, utility panels)
         // by requiring a reasonable visible frame.
-        let maxX = NSScreen.screens.map(\.frame.maxX).max() ?? 2000
         for (wid, element) in freshElements {
             guard savedFrames[wid] == nil else { continue } // skip hidden off-screen windows
             guard windowWorkspace[wid] == nil else { continue } // already tracked
@@ -193,7 +194,7 @@ final class FinderWindowManager {
             // Only track windows with a real visible frame (not internal/invisible windows)
             guard let frame = element.frame,
                   frame.width > 50, frame.height > 50,
-                  frame.origin.x < maxX - 10 else { continue }
+                  !isOffScreen(frame) else { continue }
 
             windowWorkspace[wid] = workspaceId
             Logger.log("Finder window \"\(element.title ?? "untitled")\" (id: \(wid)) tracked in workspace (cycle refresh)")
@@ -231,7 +232,6 @@ final class FinderWindowManager {
         guard let finder = NSWorkspace.shared.runningApplications.first(where: \.isFinder) else { return ([], [:]) }
 
         let elements = refreshedWindowElements(for: finder)
-        let maxX = NSScreen.screens.map(\.frame.maxX).max() ?? 2000
         var ids: [CGWindowID] = []
 
         for (wid, element) in elements {
@@ -240,7 +240,7 @@ final class FinderWindowManager {
 
             guard let frame = element.frame,
                   frame.width > 50, frame.height > 50,
-                  frame.origin.x < maxX - 10,
+                  !isOffScreen(frame),
                   let display = frame.getDisplay(),
                   displays.contains(display) else { continue }
 
@@ -274,7 +274,8 @@ final class FinderWindowManager {
     func reset() {
         restoreAllWindows()
         windowWorkspace = [:]
-        savedFrames = [:]
+        // savedFrames is kept: windows that couldn't be restored now are
+        // recovered by recoverStrandedWindows once they're visible to AX.
         lastFocusedWindow = [:]
         finderWasLastFocused = [:]
     }
@@ -294,12 +295,14 @@ final class FinderWindowManager {
 
         finder.runWithoutAnimations {
             for wid in widsToRestore {
-                if let frame = savedFrames[wid], let element = elements[wid] {
-                    Logger.log("Restoring Finder window (id: \(wid)) from deleted workspace")
-                    element.setPosition(frame.origin)
-                }
-                savedFrames.removeValue(forKey: wid)
                 windowWorkspace.removeValue(forKey: wid)
+
+                // Windows not visible to AX right now (e.g. on another macOS Space) keep
+                // their saved frame, so they are recovered the next time they are seen.
+                guard let frame = savedFrames[wid], let element = elements[wid] else { continue }
+
+                Logger.log("Restoring Finder window (id: \(wid)) from deleted workspace")
+                restore(element, id: wid, to: frame, onDisplays: nil)
             }
         }
 
@@ -323,12 +326,13 @@ final class FinderWindowManager {
             for (wid, element) in elements {
                 if let frame = savedFrames[wid] {
                     Logger.log("Restoring Finder window \"\(element.title ?? "untitled")\" (id: \(wid))")
-                    element.setPosition(frame.origin)
+                    restore(element, id: wid, to: frame, onDisplays: nil)
                 }
             }
         }
 
-        savedFrames = [:]
+        // Frames of windows that couldn't be restored are kept, so a window that
+        // wasn't visible to AX (e.g. on another macOS Space) isn't stranded off-screen.
     }
 
     // MARK: - Private
@@ -345,13 +349,111 @@ final class FinderWindowManager {
         return elements
     }
 
-    /// Generates an off-screen position based on the window's current position.
+    /// Generates an off-screen position at the right edge of the rightmost display.
+    /// The y coordinate is kept within that display, so macOS doesn't consider the
+    /// window lost and move it back on-screen.
     private func hiddenPosition(for currentFrame: CGRect) -> CGPoint {
-        let maxX = NSScreen.screens.map(\.frame.maxX).max() ?? 2000
-        let maxY = NSScreen.screens.map(\.frame.maxY).max() ?? 1200
-        let x = maxX - 1
-        let y = max(50, min(currentFrame.origin.y + CGFloat.random(in: 1...100), maxY - 100))
-        return CGPoint(x: x, y: y)
+        guard let rightmost = NSScreen.screens.map(\.normalizedFrame).max(by: { $0.maxX < $1.maxX }) else {
+            return CGPoint(x: currentFrame.maxX + 10000, y: currentFrame.origin.y)
+        }
+
+        let y = currentFrame.origin.y + CGFloat.random(in: 1...100)
+        return CGPoint(
+            x: rightmost.maxX - 1,
+            y: max(rightmost.minY + 50, min(y, rightmost.maxY - 100))
+        )
+    }
+
+    /// A window is off-screen when no display shows a meaningful part of it.
+    private func isOffScreen(_ frame: CGRect) -> Bool {
+        !NSScreen.screens.contains { screen in
+            let visible = screen.normalizedFrame.intersection(frame)
+            return !visible.isNull && visible.width >= 40 && visible.height >= 40
+        }
+    }
+
+    /// Returns the frame's origin if it's visible, otherwise an origin that centers
+    /// the window on the target display (e.g. when its display was disconnected).
+    private func visibleOrigin(for frame: CGRect, onDisplays: Set<DisplayName>?) -> CGPoint {
+        guard isOffScreen(frame) else { return frame.origin }
+
+        let screen = NSScreen.screen(onDisplays?.first) ?? NSScreen.main ?? NSScreen.screens.first
+        guard let bounds = screen?.normalizedFrame else { return frame.origin }
+
+        return CGPoint(
+            x: bounds.midX - frame.width / 2,
+            y: max(bounds.minY, bounds.midY - frame.height / 2)
+        )
+    }
+
+    /// Moves a hidden window back on-screen. The saved frame is only dropped once
+    /// the window is confirmed visible, so a failed move is retried next time
+    /// instead of leaving the window stranded off-screen.
+    private func restore(_ element: AXUIElement, id wid: CGWindowID, to frame: CGRect, onDisplays: Set<DisplayName>?) {
+        element.setPosition(visibleOrigin(for: frame, onDisplays: onDisplays))
+
+        if let newFrame = element.frame, isOffScreen(newFrame) {
+            Logger.log("Failed to restore Finder window (id: \(wid)) - will retry")
+            return
+        }
+
+        savedFrames.removeValue(forKey: wid)
+    }
+
+    /// Drops tracking for Finder windows that no longer exist anywhere (including
+    /// other macOS Spaces), so closed windows don't leave stale state behind.
+    private func pruneClosedWindows(of finder: NSRunningApplication) {
+        guard windowWorkspace.isNotEmpty || savedFrames.isNotEmpty,
+              let windowList = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]]
+        else { return }
+
+        let existingIds = windowList
+            .filter { $0[kCGWindowOwnerPID as String] as? pid_t == finder.processIdentifier }
+            .compactMap { $0[kCGWindowNumber as String] as? CGWindowID }
+            .asSet
+
+        guard existingIds.isNotEmpty else { return }
+
+        for wid in Set(windowWorkspace.keys).union(savedFrames.keys) where !existingIds.contains(wid) {
+            windowWorkspace.removeValue(forKey: wid)
+            savedFrames.removeValue(forKey: wid)
+        }
+        lastFocusedWindow = lastFocusedWindow.filter { existingIds.contains($0.value) }
+    }
+
+    /// Repairs Finder windows that ended up off-screen without FlashSpace knowing
+    /// where they belong, e.g. after a failed restore, after Finder relaunched and
+    /// reopened windows at their hidden position, or after tracking was reset.
+    private func recoverStrandedWindows(
+        activating workspaceId: WorkspaceID,
+        elements: [CGWindowID: AXUIElement],
+        onDisplays: Set<DisplayName>?
+    ) {
+        for (wid, element) in elements {
+            guard let frame = element.frame,
+                  frame.width > 50, frame.height > 50,
+                  !element.isMinimized else { continue }
+
+            let owner = windowWorkspace[wid]
+
+            if let savedFrame = savedFrames[wid] {
+                // Hidden, but no longer belongs to any workspace
+                guard owner == nil else { continue }
+
+                Logger.log("Recovering untracked hidden Finder window (id: \(wid))")
+                restore(element, id: wid, to: savedFrame, onDisplays: onDisplays)
+            } else if isOffScreen(frame) {
+                if owner == nil || owner == workspaceId {
+                    Logger.log("Recovering stranded Finder window (id: \(wid))")
+                    element.setPosition(visibleOrigin(for: frame, onDisplays: onDisplays))
+                } else {
+                    // Belongs to another workspace: keep it hidden, but remember
+                    // a visible frame to restore it to later.
+                    let origin = visibleOrigin(for: frame, onDisplays: onDisplays)
+                    savedFrames[wid] = CGRect(origin: origin, size: frame.size)
+                }
+            }
+        }
     }
 
     private func restoreWindows(
@@ -371,8 +473,7 @@ final class FinderWindowManager {
             }
 
             Logger.log("Restoring Finder window \"\(element.title ?? "untitled")\" (id: \(wid)) to \(originalFrame.origin)")
-            element.setPosition(originalFrame.origin)
-            savedFrames.removeValue(forKey: wid)
+            restore(element, id: wid, to: originalFrame, onDisplays: onDisplays)
         }
     }
 
@@ -381,16 +482,21 @@ final class FinderWindowManager {
         elements: [CGWindowID: AXUIElement],
         onDisplays: Set<DisplayName>? = nil
     ) {
-        let maxX = NSScreen.screens.map(\.frame.maxX).max() ?? 2000
-
         for (wid, element) in elements {
-            // Skip windows already hidden
-            guard savedFrames[wid] == nil else { continue }
-
             // Only hide windows tracked to a DIFFERENT workspace
             guard let trackedWs = windowWorkspace[wid], trackedWs != workspaceId else { continue }
 
             guard let frame = element.frame else { continue }
+
+            // Already hidden. macOS may have moved it back on-screen (e.g. after a
+            // display change), in which case hide it again but keep the saved frame.
+            if savedFrames[wid] != nil {
+                guard !isOffScreen(frame) else { continue }
+
+                Logger.log("Re-hiding Finder window (id: \(wid)) that came back on-screen")
+                element.setPosition(hiddenPosition(for: frame))
+                continue
+            }
 
             // When isolating displays, only hide windows on the target displays
             if let displays = onDisplays,
@@ -399,12 +505,8 @@ final class FinderWindowManager {
                 continue
             }
 
-            // Don't save the frame if it's already at a hidden position
-            // (this can happen if a previous restore failed with a stale AXUIElement)
-            guard frame.origin.x < maxX - 10 else {
-                Logger.log("Skipping hide for Finder window (id: \(wid)) — already at hidden position \(frame.origin)")
-                continue
-            }
+            // Off-screen without a saved frame is handled by recoverStrandedWindows
+            guard !isOffScreen(frame) else { continue }
 
             let position = hiddenPosition(for: frame)
             Logger.log("Hiding Finder window \"\(element.title ?? "untitled")\" (id: \(wid)) to \(position)")

@@ -35,16 +35,6 @@ final class WorkspaceManager: ObservableObject {
     /// user returns to the app's assigned workspace (permanent or temporary).
     private(set) var borrowedApps: [WorkspaceID: [MacApp]] = [:]
 
-    /// Bundle IDs of apps that FlashSpace hid during the last workspace switch.
-    /// Apps NOT in this set were visible elsewhere (e.g. on a secondary display)
-    /// and are candidates for the drag-back workflow in isolation mode.
-    private(set) var appsHiddenByFlashSpace: Set<String> = []
-
-    /// Bundle IDs of all running apps at the time of the last workspace switch.
-    /// Used to distinguish "app was on secondary display during switch" from
-    /// "app was launched after switch".
-    private(set) var appsRunningAtLastSwitch: Set<String> = []
-
     private var cancellables = Set<AnyCancellable>()
     private var observeFocusCancellable: AnyCancellable?
     private var appsHiddenManually: [WorkspaceID: [MacApp]] = [:]
@@ -96,8 +86,6 @@ final class WorkspaceManager: ObservableObject {
                 self?.activeWorkspaceDetails = nil
                 self?.temporaryApps = [:]
                 self?.borrowedApps = [:]
-                self?.appsHiddenByFlashSpace = []
-                self?.appsRunningAtLastSwitch = []
                 self?.finderWindowManager.reset()
             }
             .store(in: &cancellables)
@@ -294,16 +282,12 @@ final class WorkspaceManager: ObservableObject {
             .filter { isAnyWorkspaceAppRunning || $0.bundleURL?.fileName != "Finder" }
             .filter { $0.isOnAnyDisplay(displays) }
 
-        appsHiddenByFlashSpace = []
         for app in appsToHide {
             Logger.log("HIDE: \(app.localizedName ?? "")")
 
             if !pictureInPictureManager.hideCornerHiddenAppIfNeeded(app: app),
                !pictureInPictureManager.hidePipAppIfNeeded(app: app) {
                 app.hide()
-                if let bundleId = app.bundleIdentifier {
-                    appsHiddenByFlashSpace.insert(bundleId)
-                }
             }
         }
     }
@@ -508,11 +492,6 @@ extension WorkspaceManager {
 
         workspaceTransitionManager.showTransitionIfNeeded(for: workspace, on: displays)
 
-        // Snapshot running app IDs for isolation-mode drag detection.
-        appsRunningAtLastSwitch = Set(
-            NSWorkspace.shared.runningRegularApps.compactMap(\.bundleIdentifier)
-        )
-
         // Pull back borrowed apps that belong to this workspace's assignments.
         cleanUpBorrowsOnReturn(to: workspace)
 
@@ -528,6 +507,11 @@ extension WorkspaceManager {
         // Some apps may not hide properly,
         // so we hide apps in the workspace after a short delay
         hideAgainSubject.send((workspace, displays))
+
+        // Measure the "recently activated" window from the end of the switch.
+        // Showing and hiding apps can take longer than that window, and the
+        // activation notifications it causes are only delivered afterwards.
+        lastWorkspaceActivation = Date()
     }
 
     private func runIntegrationAfterActivation(for workspace: Workspace) {
@@ -578,6 +562,7 @@ extension WorkspaceManager {
                 }
                 runningApp.raise()
                 runningApp.activate()
+                lastWorkspaceActivation = Date()
             }
         }
     }

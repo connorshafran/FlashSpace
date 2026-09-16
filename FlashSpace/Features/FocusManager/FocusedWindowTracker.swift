@@ -37,17 +37,7 @@ final class FocusedWindowTracker {
             .filter { $0.activationPolicy == .regular }
             .removeDuplicates()
             .sink { [weak self] app in
-                // Ignore Finder desktop interactions (clicking wallpaper, Show Desktop, etc.)
-                guard !app.isFinderDesktopInteraction else { return }
-
-                if app.isFinder {
-                    self?.handleFinderWindowFocus(app)
-                } else {
-                    self?.clearFinderFocusForActiveWorkspace()
-                    self?.temporarilyAssignAppIfNeeded(app)
-                    self?.activeApplicationChanged(app, force: false)
-                    self?.autoAssignAppToWorkspaceIfNeeded(app)
-                }
+                self?.applicationActivated(app)
             }
             .store(in: &cancellables)
 
@@ -65,6 +55,39 @@ final class FocusedWindowTracker {
 
     func stopTracking() {
         cancellables.removeAll()
+    }
+
+    private func applicationActivated(_ app: NSRunningApplication, afterSettling: Bool = false) {
+        // Ignore Finder desktop interactions (clicking wallpaper, Show Desktop, etc.)
+        guard !app.isFinderDesktopInteraction else { return }
+
+        // Activations right after a workspace switch are often side effects of the
+        // switch itself, e.g. hiding the frontmost app makes macOS activate another
+        // app that is about to be hidden too. Handling them would borrow or assign
+        // that app to the new workspace (so it never gets hidden) or switch back.
+        // Re-check once the switch has settled and only continue if the app is
+        // still frontmost and visible.
+        let settleDelay = 0.4
+        if !afterSettling, Date().timeIntervalSince(workspaceManager.lastWorkspaceActivation) < settleDelay {
+            DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) { [weak self] in
+                guard let self, cancellables.isNotEmpty else { return }
+                guard NSWorkspace.shared.frontmostApplication == app, !app.isHidden else {
+                    return Logger.log("Ignoring transient activation: \(app.localizedName ?? "")")
+                }
+
+                applicationActivated(app, afterSettling: true)
+            }
+            return
+        }
+
+        if app.isFinder {
+            handleFinderWindowFocus(app)
+        } else {
+            clearFinderFocusForActiveWorkspace()
+            temporarilyAssignAppIfNeeded(app)
+            activeApplicationChanged(app, force: false)
+            autoAssignAppToWorkspaceIfNeeded(app)
+        }
     }
 
     private func activateWorkspaceForFocusedApp(force: Bool = false) {

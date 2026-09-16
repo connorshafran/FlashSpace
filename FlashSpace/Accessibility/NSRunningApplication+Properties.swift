@@ -25,8 +25,17 @@ extension NSRunningApplication {
     }
 
     var allDisplays: Set<DisplayName> {
-        allWindows
+        let displays = allWindows
             .compactMap { $0.frame.getDisplay() }
+            .asSet
+
+        // The Accessibility API only reports windows on the current macOS Space.
+        // When the user is in another Space (e.g. a full-screen app), fall back to
+        // the window server, which lists windows on all Spaces.
+        guard displays.isEmpty, !isHidden, !isPython else { return displays }
+
+        return WindowServer.windowFrames(for: processIdentifier)
+            .compactMap { $0.getDisplay() }
             .asSet
     }
 
