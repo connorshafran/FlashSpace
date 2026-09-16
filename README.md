@@ -1,3 +1,16 @@
+> [!NOTE]
+> **This is a personal fork of [FlashSpace](https://github.com/wojciech-kulik/FlashSpace) by [Wojciech Kulik](https://github.com/wojciech-kulik).**
+> I've changed it a lot for my own workflow, and it isn't affiliated with or supported by the original project.
+> For the official app, releases, and Homebrew install, use the [upstream repository](https://github.com/wojciech-kulik/FlashSpace).
+>
+> **Changes in this fork:**
+> - **Finder window management:** hide individual Finder windows per workspace and cycle through them
+> - **App borrowing:** temporarily move an app to another workspace with hotkeys, switching there with it
+> - **Isolated secondary displays:** a workspace setting that stops focus on other displays from switching workspaces or raising their apps
+> - **Space Control tweaks:** better screenshot handling, and moved or borrowed apps no longer show up in the wrong workspace
+>
+> Everything below is the original README. Like the original, this fork is licensed under GPL-3.0.
+
 [![Homebrew](https://img.shields.io/homebrew/cask/v/flashspace?color=FBB03F&logo=homebrew&label=homebrew)](https://formulae.brew.sh/cask/flashspace)
 [![GitHub Release](https://img.shields.io/github/v/release/wojciech-kulik/FlashSpace?logo=github)](https://github.com/wojciech-kulik/FlashSpace/releases)
 [![min macOS](https://img.shields.io/badge/macOS-14.0+-silver?logo=apple)](#)
